@@ -1,6 +1,14 @@
 # Ignore data files
 *.csv
 *.xlsx
+data/
+
+# Version the classification dictionary (config, not research data)
+!config/Clickstream_path_frequencies_and_coding_scheme.xlsx
+
+# Ignore pipeline outputs
+Processed_URL_Variables_*.xlsx
+diagnostics/output/
 
 # Ignore Mac system files
 .DS_Store
