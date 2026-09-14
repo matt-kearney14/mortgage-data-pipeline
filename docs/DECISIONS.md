@@ -130,3 +130,334 @@ blocked while that rule is corrected.
 later supplies a corrected `coding_dictionary` with genuine per-path rows and
 a join key, the merge's `sheet_name`/`right_on` arguments change; nothing
 else in the pipeline depends on which sheet is used for the lookup.
+
+---
+
+## DEC-F — Download document type is not recoverable from the URL; `LEDocument`, `CDDocument`, `LEDownload`, `CDDownload` are unresolvable from current inputs
+
+**Status:** Blocked on a missing input. Not provisional — this is a measured
+finding that closes spec §7-B in the negative.
+
+**Choice:** `Download` is set to 1 by rule for any path under
+`/Download/LoanDocument/` or `/download/samples/`. `LEDocument`, `CDDocument`,
+`LEDownload` and `CDDownload` are emitted as **NULL** with provenance
+`unresolved_download_type` — never 0 — until a LoanDocument-id → document-type
+lookup is supplied.
+
+**Rationale:** Every `/Download` event path in the log has exactly one shape,
+`/Download/LoanDocument/{numeric id}`. There is no `LE` or `CD` token anywhere in
+any download URL. The inherited regexes `/Download/LoanDocument/.*LE` and
+`/Download/LoanDocument/.*CD` match **0 of 337,581 rows**, so all four variables
+are identically zero in the current pipeline output — not sparse, zero. Emitting
+0 would encode "this was not an LE download" when the truth is "we cannot tell",
+which is exactly the silent default CLAUDE.md's Data hygiene rule 2 forbids.
+
+**Evidence:**
+- `diagnostics/output/coverage_report.md`, Appendix B — every `/Download` path
+  with digit runs masked collapses to the single shape
+  `/Download/LoanDocument/{N}` (17,502 events); both inherited regexes return 0
+  matching rows over the full log.
+- `docs/Project_Brief.md`, Open Decisions — currently states the opposite
+  ("download URLs appear type-identifiable… **Resolved by the repo**"). That
+  claim is contradicted by the data and needs correcting.
+- No file in `data/` contains a LoanDocument id column of any kind.
+
+**Alternatives considered, rejected:**
+- Keep the regexes and ship four all-zero columns — rejected; they would read as
+  measured zeros in any downstream analysis.
+- Treat every `/Download/LoanDocument/` hit as an LE download — rejected;
+  unfounded, and it would inflate `LEDownload` by the entire 17,502-event volume.
+- Drop the four variables — rejected; the grain is buildable the moment a
+  document-type lookup arrives, so the columns stay with NULLs.
+
+**Reversal cost:** Low. One join on LoanDocument id and four lookups; nothing
+downstream depends on these being resolved first.
+
+**What is needed to close this:** a table mapping LoanDocument id → document type
+(LE / CD / other), or an export of the document-service metadata.
+
+---
+
+## DEC-G — Uncoded content paths are classified by sibling inference, with per-cell provenance
+
+**Status:** Provisional. Every inferred cell is routed to the professor for
+confirmation in `output/dictionary_review_for_professor.xlsx`.
+
+**Choice:** Extend the per-path dictionary beyond `beta_coding`'s 103 coded paths
+to cover all 9,471 paths in the log, using a two-scope inheritance rule:
+
+- **format-scoped flags** — `Audio`, `Video`, `Personalized` — inherit from coded
+  paths of the same presentation format (`/Module`, `/Faq`, `/Slideshow`, …);
+- **topic-scoped flags** — all others — inherit from coded paths sharing the same
+  content topic slug (`budgeting-basics`, `your-va-fixed-rate-loan`, …);
+- **audio clips** inherit from a coded clip with the same `CC_{n}` id, which is
+  the clip's identity — the path prefix is only the page it was played from;
+- **anything with no basis** stays NULL with provenance `unresolved`.
+
+Every flag cell in `output/path_dictionary_extended.csv` carries a sibling
+`<flag>__prov` column valued `coded`, `inferred_topic`, `inferred_format`,
+`inferred_audio_cc`, `navigation`, `rule_download_path`, `non_pageview`,
+`unresolved` or `unresolved_download_type`. Downstream analysis can therefore
+reproduce any result on coded cells alone.
+
+**Rationale:** The professor coded a *sample* of the content library, not all of
+it — 26 page rows plus 77 audio clips. The uncoded remainder is not arbitrary:
+it is near-identical siblings of coded pages (`/Module/your-va-fixed-rate-loan`
+uncoded while `/JustTheFacts/your-va-fixed-rate-loan-just-the-facts` is coded).
+The two scopes were chosen by measurement, not assumption: a naive topic-only
+rule scores 85.3% leave-one-out, and moving `Audio`/`Video` to format scope lifts
+those two flags from 61.1% to 95.5% and the overall rule to **90.9%** (169 of 186
+held-out cells). The per-flag accuracies are reported as measured, including the
+weak ones — `ProcessRelated` 72.2% and `BorrowerMortgageProcessRelated` 66.7%,
+which is consistent with `ProcessRelated` being the variable the professor
+himself flagged `????` (DEC-E).
+
+**Evidence:**
+- `diagnostics/output/dictionary_inference_report.md` §1 — per-flag leave-one-out
+  table; §3 — event coverage per flag before vs after (e.g. `MortgageRelated`
+  30.9% → 83.5%); §4a — the complete 28-path list still needing the professor.
+- `diagnostics/output/coverage_report.md` — the coverage gap this addresses.
+- Script: `diagnostics/build_path_dictionary.py` (sources unmodified).
+
+**Alternatives considered, rejected:**
+- Leave uncoded paths at 0 with a discrepancy log — rejected by the user; it
+  discards signal on 8.45% of events across near-identical siblings of coded
+  pages, and 0 is itself a silent claim.
+- Infer everything from topic alone — rejected; measured at 85.3%, and it gets
+  `Audio`/`Video` wrong 39% of the time because those are properties of the
+  presentation format, not the subject.
+- Hand-code the 28 remaining paths ourselves — rejected; that is the professor's
+  coding scheme to extend, and the list is short enough to route to him.
+
+**Reversal cost:** Very low. Drop every row whose provenance is not `coded` and
+the dictionary reverts exactly to `beta_coding`. Verified: coded values are
+reproduced bit-for-bit (0 altered cells) and every originally-coded cell is
+labelled `coded`.
+
+---
+
+## DEC-H — Navigation and non-pageview paths are classified by explicit rule
+
+**Status:** Provisional.
+
+**Choice:** 23 structural paths — `/MyMortgage`, `/Login*`, `/`, `/Dashboard*`,
+`/SelectLoan`, `/Logout`, `/Contact`, `/About`, `/Privacy`, `/Terms`,
+`/Glossary`, `/AwarenessQuestions*`, `/survey` — receive **0 for every content
+flag**, with provenance `navigation`. `/favicon.ico` and `/cart.json` receive
+NULL with provenance `non_pageview` and should be excluded from pageview counts
+entirely.
+
+**Rationale:** These carry 157,055 events — 46.5% of the entire log — and are the
+single largest reason the raw dictionary match rate looks catastrophic (36.6%).
+They are application chrome and authentication screens with no mortgage education
+content to classify, so 0 is the correct value rather than an absence of one.
+Recording it as an explicit rule with its own provenance value keeps it
+distinguishable from a coded 0 and from a defaulted one. `/favicon.ico` (4,670
+events) and `/cart.json` (5) are browser asset requests, not pages a borrower
+viewed; counting them as pageviews would inflate `webpages_visited` for every
+user.
+
+**Evidence:**
+- `diagnostics/output/coverage_report.md`, Appendix A — the unmapped tail broken
+  down by cause; navigation is 161,731 of the 213,917 unmapped events.
+- `diagnostics/output/dictionary_inference_report.md` §2 — path rows by class.
+
+**Alternatives considered, rejected:**
+- Leave them unmapped and NULL — rejected; it would make `MortgageRelated` and
+  every sibling flag unknown for nearly half the log when the answer is plainly 0.
+- Count `/favicon.ico` as a pageview — rejected; it is an automatic browser
+  request, not a user action.
+- Drop navigation rows from the event log — rejected; they are needed for
+  sessionization, `time_on_page` of the preceding page, and `pages_in_session`.
+
+**Reversal cost:** Very low. Filter on `row_class` / provenance `navigation`;
+the membership list is a single named constant in
+`diagnostics/build_path_dictionary.py`.
+
+---
+
+## DEC-I — Language is read from the path, never from the dictionary
+
+**Status:** Provisional; supersedes nothing, but it removes `beta_coding` as a
+candidate source for variables 18–19.
+
+**Choice:** The extended dictionary emits **no** `English_YN` / `Spanish_YN`
+columns. It emits `path_language` ∈ {`en`, `es`, `unknown`} derived from the path
+(`/translations/es`, `/audio/faq/es/`, and the `en` equivalents). The stateful
+per-user language variables remain a pipeline concern per spec §3.
+
+**Rationale:** `beta_coding` codes `English(Y/N)` = 1 and `Spanish (Y/N)` = 0 on
+**every single row without exception** — the professor coded only the English
+library. The two columns therefore carry zero information and inheriting them
+would manufacture a finding: every Spanish page in the log would be labelled
+English. The log does contain Spanish paths (`/translations/es`, 320 events;
+`/audio/faq/es/CC_*.mp3`, 73 distinct clips, 144 events), and
+`talkument_useraccount.provided_language` has full coverage with 282 `es` users,
+so the state machine described in the spec has real inputs to work from.
+
+**Evidence:**
+- Value-set scan of `beta_coding`: `English(Y/N)` ∈ {1.0}, `Spanish (Y/N)` ∈
+  {0.0} across all 103 coded path rows.
+- `diagnostics/output/inventory_report.md` Q2 — `provided_language` coverage
+  1.0000, distribution {en: 20,981, es: 282}.
+- Path-language distribution in `output/path_dictionary_extended.csv`: 23,248
+  `en` events, 464 `es`, 313,869 `unknown` (paths with no language segment).
+
+**Alternatives considered, rejected:**
+- Inherit `English(Y/N)`/`Spanish (Y/N)` from the dictionary — rejected; it
+  hard-codes every page as English and makes the spec's own recommended QA check
+  (modal computed language vs account language) impossible to fail.
+- Set `English_YN = NOT Spanish_YN` from the path — rejected; this is the exact
+  inherited defect the Project Brief already flags, and it makes the
+  reconciliation check pass trivially.
+
+**Reversal cost:** Very low. `path_language` is an additional column; nothing was
+removed that carried information.
+
+---
+
+## DEC-J — `Audio` is emitted as an integer but a true link count is not derivable
+
+**Status:** Provisional. The definition and the data disagree; the professor
+should confirm which he wants.
+
+**Choice:** `Audio` is typed `Int16` and carries the dictionary's value, which is
+0 or 1. It is **not** a count of audio links, despite the canonical column spec
+calling it an integer count.
+
+**Rationale:** `coding_dictionary` defines `Audio` as the *"number of audio file
+links"* on the page, and CLAUDE.md's canonical column table types it **integer
+count**. But `beta_coding` — the only sheet with per-path values — codes it
+strictly 0/1, and the event log cannot supply the missing information: a page's
+audio-link density is a property of the page's HTML, which we do not have. The
+one trace of page-to-clip association in the log is the prefixed clip path
+(`/Module/audio/faq/en/CC_100.mp3`), and it identifies only the *section*, not
+which module — and covers 153 of 4,170 mp3 events. Emitting a fabricated count
+would be worse than emitting the binary; emitting the binary under a column the
+spec says is a count is a mismatch that must be visible rather than silent.
+
+**Evidence:**
+- `beta_coding` value-set scan: `Audio` ∈ {0.0, 1.0} across all 103 coded paths.
+- mp3 path shapes in the log: `/audio/faq/en/CC_{N}.mp3` 3,873 events,
+  `/audio/faq/es/CC_{N}.mp3` 144, `/Module/audio/faq/en/CC_{N}.mp3` 130,
+  `/Faq/audio/faq/en/CC_{N}.mp3` 23 — only the last two carry any page context,
+  and neither names a specific page.
+- `docs/Clickstream_Variable_Specification_v2.md` §2; CLAUDE.md canonical columns.
+
+**Alternatives considered, rejected:**
+- Derive the count from prefixed clip paths — rejected; covers 3.7% of mp3 events
+  and resolves to a section, not a page.
+- Silently retype as binary and drop the count language from the docs — rejected;
+  that repeats the `ProcessRelated` failure mode of promoting a workaround into
+  documented fact.
+- Leave `Audio` NULL everywhere — rejected; the binary is real information.
+
+**Reversal cost:** Very low. If the professor supplies per-page link counts it is
+a dictionary column swap; `AudioMp3` (row-level, exact) is unaffected either way.
+
+---
+
+## DEC-K — Users absent from `talkument_useraccount.xlsx` are seeded English
+
+**Status:** Provisional.
+
+**Choice:** The language state machine seeds each user from
+`provided_language`. The 132 users present in the event log but absent from the
+account file are seeded `DEFAULT_LANGUAGE = "en"`. Every row carries
+`language_seed_source` ∈ {`account`, `default`} so the seeded-by-default
+population is separable in any downstream analysis.
+
+**Rationale:** 5,621 events (1.67% of the log) belong to users with no account
+row. The state machine needs an initial value; leaving it NULL would propagate
+NULL through every row until that user's first `/translations/` switch, if any,
+and break the exhaustiveness property the spec requires (`English + Spanish ==
+pages`). English is the base rate at 20,981 of 21,263 accounts (98.7%). Marking
+the provenance rather than hiding the assumption is what keeps this honest.
+
+**Evidence:**
+- `diagnostics/output/inventory_report.md` Q6 — 132 event-log users absent from
+  `useraccount`, 5,621 affected event rows (1.67%).
+- Q2 — `provided_language` coverage 1.0000, {en: 20,981, es: 282}.
+- `output/qa_phase1.md` §2 — 331,960 account-seeded rows vs 5,621 default-seeded.
+
+**Alternatives considered, rejected:**
+- Seed from the first `/translations/` hit instead — rejected; most users never
+  visit one, so it would leave the majority NULL.
+- Drop the 132 users — rejected; they are real users with real event histories.
+
+**Reversal cost:** Very low. `DEFAULT_LANGUAGE` is a named constant, and
+`language_seed_source` lets anyone re-run the analysis excluding these users
+without a pipeline change.
+
+---
+
+## DEC-L — Unresolved flags are emitted NULL, not 0; CLAUDE.md rule 2 is amended
+
+**Status:** Provisional. **Conflicts with CLAUDE.md as currently written — that
+document needs the edit.**
+
+**Choice:** Flags with no basis are emitted **NULL**, with the path and its hit
+count written to `output/discrepancy_log.csv`. The alternative behaviour is
+available without a code edit: `--unresolved-fill 0`.
+
+**Rationale:** CLAUDE.md Data hygiene rule 2 says unmapped paths *"receive 0 for
+FIXED flags **and** are written to a discrepancy log."* The rule's stated intent —
+never silently default — is right, but the prescribed 0 is precisely a silent
+default: it encodes "measured, and the answer is no" for a path nobody classified.
+The cost is now measurable. Under the inherited 0-fill, `Goal_to_inform` reads
+42,391 ones against 108,162 fabricated zeros, and `LEDocument`/`CDDocument` read
+as 337,581 measured zeros when not one row was ever evaluated. Any rate computed
+over those denominators is wrong by construction. The discrepancy-log half of the
+rule is kept and strengthened; only the 0-fill half is changed.
+
+**Evidence:**
+- `output/phase1_before_after.md` — de-fabricated 0→NULL counts per column;
+  55,631 for the topic-scoped flags, 108,162 for `Goal_to_*`, 337,581 for the
+  DEC-F columns.
+- `output/qa_phase1.md` §5 — coverage reported as measured per column.
+- `output/discrepancy_log.csv` — 9,253 paths, 177,650 events, with hit counts.
+
+**Alternatives considered, rejected:**
+- Follow CLAUDE.md literally and fill 0 — rejected as above, but retained behind
+  `--unresolved-fill 0` so the professor's preference is a rerun, not an edit.
+- Drop rows with any unresolved flag — rejected; it would discard 52.6% of the
+  log and bias every user-level aggregate toward users who read coded content.
+
+**Reversal cost:** Zero — it is a CLI flag.
+
+---
+
+## DEC-M — Language switches on `/translations/` only, per spec §3
+
+**Status:** Provisional. Default follows the spec; the alternative is a flag.
+
+**Choice:** The language state machine switches state **only** on
+`/translations/en` and `/translations/es`, exactly as spec §3's algorithm is
+written. Treating an `/en/` or `/es/` asset segment (e.g.
+`/audio/faq/es/CC_12.mp3`) as a switch is available via `--lang-asset-paths`.
+
+**Rationale:** The asset-path extension is defensible — a clip under
+`/audio/faq/es/` is Spanish content — but it is a deviation from the rank-1
+source of truth, and the spec's algorithm is explicit. Measured, the difference
+is small and slightly favours the extension: 195 rows move, Spanish rows go
+4,595 → 4,720, and the Spanish-group mismatch rate falls 11.48% → 10.93%. That
+is not a large enough gain to justify silently departing from the spec, and the
+distinction is real: requesting `/translations/es` means the *user switched the
+site language*, whereas playing one Spanish clip does not.
+
+**Evidence:**
+- Both modes run on the full log: 195 differing rows; per-group mismatch rates
+  en 0.02% / es 11.48% (spec) vs en 0.01% / es 10.93% (extension).
+- `output/qa_phase1.md` §1 states the active mode in the report itself.
+
+**Alternatives considered, rejected:**
+- Default to the asset-path extension — rejected; deviates from spec §3 for a
+  0.55 pp gain on 183 users.
+- Hard-code the spec behaviour with no flag — rejected; CLAUDE.md requires that a
+  professor's "try it the other way" be a rerun.
+
+**Note on the residual mismatch:** the 11.48% Spanish-group mismatch is **not a
+defect**. All of it traces to users who explicitly requested `/translations/en`
+and stayed in English; verified that none of those rows were switched by an
+asset-path segment. It is a behavioural finding about Spanish-preference
+borrowers and is worth reporting to the professor in its own right.
