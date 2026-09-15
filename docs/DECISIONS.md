@@ -461,3 +461,72 @@ defect**. All of it traces to users who explicitly requested `/translations/en`
 and stayed in English; verified that none of those rows were switched by an
 asset-path segment. It is a behavioural finding about Spanish-preference
 borrowers and is worth reporting to the professor in its own right.
+
+---
+
+## DEC-S — `/translations/en` is a page resource, not a language switch
+
+**Status:** Provisional. Needs confirmation from someone who knows the
+application's behaviour. **This decision corrects a defect in our own earlier
+work, and retracts a finding we reported.**
+
+**Choice:** `/translations/es` switches the language state to Spanish.
+`/translations/en` does **not** switch state by default — it is treated as a
+resource the page requests. Controlled by `--lang-en-switch`, default `never`;
+`always` restores the previous spec-literal behaviour, with `not-after-module`
+and `not-paired-with-es` available as middle positions.
+
+**Rationale:** The language toggle exists only in pilot arm 3. The log agrees:
+`/translations/es` occurs 292 times in arm 3 and **zero times in arm 2**. But
+`/translations/en` occurs at almost identical rates in both arms — **9,085 in
+arm 2 and 9,114 in arm 3** — and arm 2 users have no toggle to press. Whatever
+generates those 9,085 events is not a user action. It is preceded by a
+`/Module/` page 85.0% of the time in arm 2 and 83.8% in arm 3, and 117 of the
+119 cases where `/translations/en` directly follows `/translations/es` are **0
+seconds apart** — a single page load requesting both.
+
+Treating every `/translations/en` as "the user switched to English" therefore
+flipped Spanish-preference users back to English on module pages they had not
+asked to be in English.
+
+**Evidence:**
+
+| switching rule | Spanish pageviews | es-account users whose modal language is not `es` |
+|---|---|---|
+| `always` (previous behaviour) | 4,548 | 11.5% |
+| `not-paired-with-es` | 5,572 | 3.3% |
+| `not-after-module` | 5,424 | 6.6% |
+| **`never` (chosen)** | **6,836** | **0.0%** |
+
+Under the chosen rule every Spanish-account user's modal computed language is
+Spanish, which is what should be true of users given Spanish content who use it.
+
+**Retraction.** We previously reported the 11.5% figure to the project owner as
+a *behavioural finding* — "Spanish-preference users who explicitly chose English
+and stayed there." That was wrong. It was our own bug, and no such behaviour is
+evidenced. `output/qa_phase1.md` §1 now carries the correction inline.
+
+**A check that does not work, recorded so nobody re-runs it as evidence:**
+"Spanish pageviews appearing in arm 2" reads 0 under all four rules and looks
+like a passing discriminator. It is not. No arm-2 user has `provided_language =
+es` and `/translations/es` never occurs in arm 2, so no rule can produce a
+Spanish row there. The check cannot fail and is not evidence.
+
+**Alternatives considered, rejected:**
+- Keep `always` per spec §3 — rejected; the spec's algorithm was written without
+  knowledge that the application emits this path on page load, and the arm-2
+  evidence is decisive that it does.
+- `not-after-module` — rejected as the default; it is a heuristic on adjacency
+  that still leaves a 6.6% mismatch, and 15% of the events are not
+  module-preceded anyway.
+
+**What would settle this:** confirmation of whether the application emits
+`/translations/en` when a module page loads, independently of any user action.
+If it does not, the arm-2 events need another explanation before `always` could
+be restored. If a user switching *back* to English emits the same path as a page
+load, the two are indistinguishable in this log and Spanish time will be
+slightly over-counted under `never` — the size of that over-count is the gap
+between the `never` and `not-paired-with-es` rows above, about 1,264 pageviews.
+
+**Reversal cost:** Zero. It is a CLI flag; nothing downstream depends on which
+rule was used beyond the two language columns and their aggregates.

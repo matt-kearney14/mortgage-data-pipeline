@@ -47,10 +47,28 @@ LANG_SWITCH_EN = "/translations/en"
 LANG_SWITCH_ES = "/translations/es"
 # DEC-M. Spec §3's algorithm switches state on /translations/{en,es} ONLY.
 # Treating an /es/ or /en/ asset segment (e.g. /audio/faq/es/CC_12.mp3) as a
-# switch is a deviation from the spec; it moves 195 rows and slightly lowers the
-# mismatch rate on both language groups. Default is the spec. Enable with
-# --lang-asset-paths to test the alternative without editing this file.
+# switch is a deviation from the spec; it moves 195 rows. Default is the spec.
 LANG_ASSET_PATH_SWITCHING = False
+
+# DEC-S. /translations/en is NOT reliably a user action.
+#
+# The language toggle exists only in pilot arm 3. /translations/es occurs there
+# and nowhere else (292 events in arm 3, 0 in arm 2) — it is a genuine switch.
+# /translations/en occurs in BOTH arms at almost the same rate (9,085 in arm 2,
+# 9,114 in arm 3) and is preceded by a /Module/ page 85.0% and 83.8% of the time
+# respectively. Arm 2 has no toggle, so its 9,085 events cannot be user actions:
+# the app emits /translations/en when a module page loads. 117 of the 119
+# es-then-en pairs are 0 seconds apart — one page load, both resources.
+#
+# Treating every /translations/en as "switched to English" therefore flips
+# Spanish-preference users back to English on module page loads they did not
+# request. Default is 'never'; the alternatives are kept so the choice can be
+# re-run rather than re-coded.
+#   never             /translations/en is a page resource, never a switch
+#   always            spec-literal; every /translations/en switches (old behaviour)
+#   not-after-module  a switch unless the previous row was a /Module/ page
+#   not-paired-with-es  a switch unless it follows /translations/es within 1s
+LANG_EN_SWITCH = "never"
 LANG_PATH_ES = "/es/"
 LANG_PATH_EN = "/en/"
 
@@ -148,6 +166,20 @@ def add_language_state(df: pd.DataFrame, acct_lang: pd.Series) -> pd.DataFrame:
     switch = pd.Series(pd.NA, index=df.index, dtype="object")
     is_en = p.str.startswith(LANG_SWITCH_EN)          # spec §3
     is_es = p.str.startswith(LANG_SWITCH_ES)
+
+    # DEC-S: decide which /translations/en rows count as a user action
+    if LANG_EN_SWITCH == "never":
+        is_en = pd.Series(False, index=df.index)
+    elif LANG_EN_SWITCH == "not-after-module":
+        prev = df.groupby(USER_COL)[URL_COL].shift(1).fillna("")
+        is_en = is_en & ~prev.str.startswith("/Module/")
+    elif LANG_EN_SWITCH == "not-paired-with-es":
+        prev = df.groupby(USER_COL)[URL_COL].shift(1).fillna("")
+        gap = (df[TIME_COL] - df.groupby(USER_COL)[TIME_COL].shift(1)).dt.total_seconds()
+        is_en = is_en & ~(prev.str.startswith(LANG_SWITCH_ES) & (gap <= 1))
+    elif LANG_EN_SWITCH != "always":
+        raise SystemExit(f"unknown --lang-en-switch: {LANG_EN_SWITCH}")
+
     if LANG_ASSET_PATH_SWITCHING:                     # DEC-M, opt-in
         is_en = is_en | p.str.contains(LANG_PATH_EN, regex=False)
         is_es = is_es | p.str.contains(LANG_PATH_ES, regex=False)
@@ -211,7 +243,8 @@ def run_qa(df: pd.DataFrame, acct_lang: pd.Series) -> list[str]:
     modal = (df.groupby(USER_COL)["language_state"]
                .agg(lambda s: s.mode().iloc[0] if len(s.mode()) else pd.NA))
     cmp = pd.DataFrame({"computed": modal, "account": acct_lang}).dropna()
-    L.append(f"Switching mode: **{'translations + asset paths (DEC-M)' if LANG_ASSET_PATH_SWITCHING else 'spec §3 — /translations/ only'}**")
+    L.append(f"Switching mode: `--lang-en-switch {LANG_EN_SWITCH}` (DEC-S)"
+             + (" + asset paths (DEC-M)" if LANG_ASSET_PATH_SWITCHING else ""))
     L.append("")
     L.append("| account language | users | modal computed matches | mismatch rate |")
     L.append("|---|---|---|---|")
@@ -271,9 +304,11 @@ def run_qa(df: pd.DataFrame, acct_lang: pd.Series) -> list[str]:
     L.append("")
     dup = int((df[URL_COL] == df.groupby(USER_COL)[URL_COL].shift(1)).sum())
     L.append(f"- consecutive same-URL pageviews retained: **{dup:,}** ({dup/len(df):.1%})")
-    L.append("The Spanish mismatch is a **behavioral finding, not a bug**: all of it comes")
-    L.append("from users who explicitly requested `/translations/en` and stayed there.")
-    L.append("Verified: 0 of those rows were switched by an asset-path segment.")
+    L.append("**Correction, 2026-09-15.** An earlier version of this report described the")
+    L.append("Spanish mismatch as a behavioural finding. It was not — it was an artifact of")
+    L.append("treating `/translations/en` as a user action when the app emits it on module")
+    L.append("page loads. Under `--lang-en-switch never` the mismatch falls from 11.5% to")
+    L.append("0.0%. See DEC-S.")
     L.append("")
     return L
 
@@ -387,7 +422,7 @@ def write_manifest(df: pd.DataFrame) -> pd.DataFrame:
 
 # ============================================================================
 def main() -> None:
-    global UNRESOLVED_FILL
+    global UNRESOLVED_FILL, LANG_ASSET_PATH_SWITCHING, LANG_EN_SWITCH
     ap = argparse.ArgumentParser()
     ap.add_argument("--excel", action="store_true", help="also write .xlsx (slow)")
     ap.add_argument("--compare", action="store_true", help="before/after vs inherited")
@@ -395,9 +430,12 @@ def main() -> None:
                     help="fill unresolved flags with this value instead of NULL (DEC-L)")
     ap.add_argument("--lang-asset-paths", action="store_true",
                     help="also switch language state on /en/ or /es/ asset segments (DEC-M)")
+    ap.add_argument("--lang-en-switch", default=LANG_EN_SWITCH,
+                    choices=["never", "always", "not-after-module", "not-paired-with-es"],
+                    help="when /translations/en counts as a user language switch (DEC-S)")
     args = ap.parse_args()
-    global LANG_ASSET_PATH_SWITCHING
     LANG_ASSET_PATH_SWITCHING = args.lang_asset_paths
+    LANG_EN_SWITCH = args.lang_en_switch
     if args.unresolved_fill is not None:
         UNRESOLVED_FILL = args.unresolved_fill
 
