@@ -40,6 +40,15 @@ SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the profes
 TIMEZONE = "UTC"              # DEC-R; eventdate is tz-naive, no input disagrees
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
 
+# Pilot arms. 2 and 3 are as described by the project owner; 1 is inferred from
+# the data (11,624 loans, only 9.3% with a user hash, and not one user whose only
+# bucket is 1) and has no rows in the user table by construction.
+PILOT_ARM_LABELS = {
+    1: "1 - No Talkument access",
+    2: "2 - English only",
+    3: "3 - Multilingual support",
+}
+
 CHARACTERISTICS = [
     "Personalized", "GeneralFinancial", "MortgageRelated", "ProcessRelated_provisional",
     "BorrowerMortgageProcessRelated", "LenderMortgageProcessRelated", "LoanTermsRelated",
@@ -318,8 +327,9 @@ def main() -> None:
     br = (appl.dropna(subset=["user_hash"])
               .merge(buck, left_on="loannumber", right_on="loan_number", how="inner"))
     gb = br.groupby("user_hash")
-    u["pilot_bucket"] = gb.bucket.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan
-                                      ).reindex(u.index)
+    u["pilot_bucket"] = (gb.bucket.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan)
+                           .reindex(u.index).astype("Int64"))
+    u["pilot_arm"] = u.pilot_bucket.map(PILOT_ARM_LABELS)
     # reindex with fill_value rather than fillna: reindexing a bool series onto a
     # wider index yields object dtype, and fillna on that is deprecated.
     u["pilot_bucket_conflicting"] = (gb.bucket.nunique().gt(1)
@@ -327,7 +337,11 @@ def main() -> None:
     u["language_preference"] = gb.language_preference.agg(
         lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
     u["state"] = gb.state.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
-    note("pilot_bucket", "loan", "Pilot arm, bridged loan_number to loannumber.",
+    note("pilot_arm", "loan", "Plain-language name of the pilot arm.",
+         "Sort or filter on this, or on pilot_bucket. Arm 1 never appears: those "
+         "borrowers had no Talkument access, so they generate no clickstream and have "
+         "no row in this table. Compare arm 1 on loan outcomes, not on this dataset.")
+    note("pilot_bucket", "loan", "Pilot arm number, bridged loan_number to loannumber.",
          "NULL where a user holds loans in different arms. Bucket 1 never appears: those "
          "borrowers had no Talkument access and so generate no clickstream.")
     note("pilot_bucket_conflicting", "loan", "True if the user's loans span more than one arm.",
@@ -337,6 +351,18 @@ def main() -> None:
     note("state", "loan", "Applicant state.", "NULL where a user's loans disagree.")
 
     u = u.reset_index()
+
+    # Grouping columns sit immediately after the id so the sheet can be sorted or
+    # filtered by arm without scrolling past 70 measure columns first.
+    FRONT = ["user_hash", "pilot_arm", "pilot_bucket", "pilot_bucket_conflicting",
+             "language_preference", "provided_language", "expertise_level",
+             "account_enabled", "state"]
+    u = u[FRONT + [c for c in u.columns if c not in FRONT]]
+
+    # carry the arm down to the event and session files too, so each stands alone
+    arm = u.set_index("user_hash").pilot_arm
+    ev["pilot_arm"] = ev.user_hash.map(arm)
+    sess["pilot_arm"] = sess.user_hash.map(arm)
 
     # ------------------------------------------------------------- outputs
     OUT.mkdir(exist_ok=True)
@@ -350,10 +376,12 @@ def main() -> None:
     cb["coverage"] = (cb.users_with_a_value / len(u)).round(4)
     cb = cb[["column", "status", "level", "definition", "how_to_read",
              "waiting_on", "users_with_a_value", "coverage", "decision_id"]]
-    # order: blocked columns first, so what is missing is the first thing seen
-    cb = cb.sort_values(["status", "level", "column"],
-                        key=lambda s: s.map({"Not yet available": 0, "Ready": 1})
-                        if s.name == "status" else s)
+    # blocked columns first (what is missing is the first thing seen), then the
+    # rest in the same order as the User Data sheet so the two line up
+    order = {c: i for i, c in enumerate(u.columns)}
+    cb["_sheet_pos"] = cb.column.map(order).fillna(9999)
+    cb["_blocked"] = (cb.status == "Not yet available").map({True: 0, False: 1})
+    cb = cb.sort_values(["_blocked", "_sheet_pos"]).drop(columns=["_blocked", "_sheet_pos"])
     cb.to_csv(OUT / "codebook.csv", index=False)
 
     # timeout sensitivity, regenerated every run so the figure is never quoted alone
