@@ -1,115 +1,115 @@
-### Proposed File Name
+# Mortgage Clickstream Pipeline
 
-`README_Clickstream_Feature_Engineering.md`
+Transforms raw Talkument clickstream logs into a **user-level behavioral dataset**
+— one row per borrower, every variable in the specification as a column — for
+analysis of how mortgage borrowers engage with disclosure and education content.
 
----
-
-# Mortgage Clickstream Feature Engineering Pipeline
-
-## Project Overview
-
-This repository contains the automated feature-engineering pipeline for processing raw clickstream interaction logs (`talkument_userinteractions.xlsx`) into behavioral variable sets. The pipeline is implemented via the `ClickstreamPath` Python class, utilizing a **config-driven architecture** that decouples business classification rules from python code execution.
-
-The current implementation focuses on **Variables 1 through 21 (URL and Path-Based Behavioral Features)** to establish a foundational behavioral dataset prior to generating complex, timestamp-derived mathematical metrics.
+> **Rewritten 2026-09-14.** The previous README described an inherited pipeline
+> whose output contained fabricated zeros, four identically-empty columns, and a
+> static language rule the specification does not describe. It also referenced
+> `03_final_merge.py`, which does not exist. None of that is accurate any more.
 
 ---
 
-## Configuration & Master Variables
+## The deliverable
 
-The script relies on master variable constants defined at the top of `03_final_merge.py` to ensure dataset agility across changing input header conventions:
+`output/user_level_dataset.xlsx` — **10,140 users × 81 columns**, with
+`output/codebook.csv` documenting every column: definition, quality caveat, and
+the decision that produced it.
 
-* **`USER_COL = 'user_hash'`**: Tracks unique user identification.
-* **`TIME_COL = 'eventdate'`**: Tracks the interaction timestamp.
-* **`URL_COL = 'path'`**: Tracks the target webpage or file path.
-* **Mapping Source**: `Clickstream_path_frequencies_and_coding_scheme.xlsx` (specifically reading tab `beta_coding` on key `CODING SCHEME`).
-
----
-
-## Active & Fully Functional Variables (Variables 1–21)
-
-The pipeline actively processes and outputs **21 behavioral features**, divided across three computational tiers:
-
-### 1. Static Dictionary Lookups (Variables 1–14)
-
-*Engineered by executing an automated merge against the `beta_coding` classification sheet. Unmapped paths default to `0`.*
-
-* **Var 1: Personalized**: Binary indicator (1/0) for user-customized modules.
-* **Var 2: Download**: Binary indicator (1/0) for document download pages.
-* **Var 3: LoanEstimateRelated**: Core modules and audio files explaining Loan Estimates.
-* **Var 4: LoanTermsRelated**: Explanatory content related to loan terms and FAQs.
-* **Var 5: LenderMortgageProcessRelated**: Infographics, process guides, and lender audio files.
-* **Var 6: GeneralFinancial**: General budgeting, credit management, and financial health pages.
-* **Var 7: Video**: Pages with embedded primary video content.
-* **Var 8: CDRelated**: Closing Disclosure informational content and audio clips.
-* **Var 9: Goal_to_Advise**: Interactive advisory modules (e.g., credit improvement).
-* **Var 10: ProcessRelated**: Core application and workflow pages.
-* **Var 11: BorrowerMortgageProcessRelated**: Consumer-facing process guides and audio clips.
-* **Var 12: Goal_to_inform**: Educational content modules and term acceptance pages.
-* **Var 13: MortgageRelated**: General mortgage informational pages, FAQs, and infographics.
-* **Var 14: Audio**: Pages embedding media players or direct `.mp3` content.
-
-### 2. Dynamic Pattern Matching (Variables 15–19)
-
-*Engineered via runtime string detection and regular expressions.*
-
-* **Var 15: English_YN (`English_YN`)**: Default `1`; evaluates to `0` if path contains `/translations/es`.
-* **Var 16: LEDocument (`LEDocument`)**: Evaluates to `1` if path matches `r'/Download/LoanDocument/.*LE'`.
-* **Var 17: CDDocument (`CDDocument`)**: Evaluates to `1` if path matches `r'/Download/LoanDocument/.*CD'`.
-* **Var 18: AudioMp3 (`AudioMp3`)**: Evaluates to `1` if path ends directly with `.mp3`.
-* **Var 19: Spanish_YN (`Spanish_YN`)**: Evaluates to `1` if path contains `/translations/es`.
-
-### 3. Sequential Look-Back Logic (Variables 20–21)
-
-*Engineered by grouping clicks by `user_hash` and evaluating immediate preceding user action using stateful row shifting (`shift(1)`).*
-
-* **Var 20: LEDownload (`LEDownload`)**: Triggers `1` only if the current event is a `Download` action AND the immediately preceding page viewed by the user was `LoanEstimateRelated`.
-* **Var 21: CDDownload (`CDDownload`)**: Triggers `1` only if the current event is a `Download` action AND the immediately preceding page viewed by the user was `CDRelated`.
+Thirteen columns are present but deliberately all-NULL — the four download
+characteristics and five milestone timers — because the source data for them does
+not exist yet. Keeping them stabilises the schema; the codebook states why each
+is empty.
 
 ---
 
-## Pending & Deferred Variables (Variables 22–42)
-
-The following calculated, mathematical, and multi-file metrics are **not yet implemented** in the active pipeline and are intentionally deferred to Phase 2:
-
-### Session & Duration Calculations
-
-* **Var 22**: Time spent on page ($Timestamp_{T+1} - Timestamp_T$).
-* **Var 23**: Session start timestamp.
-* **Var 24**: Session end timestamp (30-minute inactivity threshold).
-* **Var 25**: Total session time duration.
-* **Var 26**: Inter-session elapsed time ($SessionStart_{N} - SessionEnd_{N-1}$).
-* **Var 33**: Total accumulated time spent grouped by webpage characteristic.
-* **Var 35**: Total number of unique sessions per user.
-
-### Aggregated Volume Metrics
-
-* **Var 27**: Total webpages viewed per session.
-* **Var 28**: Total overall webpages visited per user.
-* **Var 29**: Total Spanish webpages visited per user.
-* **Var 30**: Total English webpages visited per user.
-* **Var 31**: Count of distinct/unique URL paths visited per user.
-* **Var 32**: Aggregated visit count grouped by webpage characteristic.
-* **Var 34**: Aggregate count of `.mp3` audio clips triggered per user.
-* **Var 36**: Total distinct days account was accessed.
-
-### External Milestone & Loan File Metrics
-
-*(Requires joining external loan files: `talkument_loan_applicants.xlsx`, `talkument_useraccount.xlsx`)*
-
-* **Var 37**: Total time elapsed from account activation to final account access.
-* **Var 38**: Time elapsed from `Application_Date` to account activation.
-* **Var 39**: Time elapsed from account activation to `LE_TIL_Sent_Date`.
-* **Var 40**: Time elapsed from `LE_TIL_Sent_Date` to first LE page visit.
-* **Var 41**: Time elapsed from account activation to `Lock_Date`.
-* **Var 42**: Time elapsed from final account access to `Current_Status_Date`.
-
----
-
-## Execution Instructions
+## Running it
 
 ```bash
-python3 clickstream_processor.py
-
+python3 diagnostics/build_path_dictionary.py   # path -> characteristics + provenance
+python3 clickstream_processor.py --compare     # event grain, URL characteristics
+python3 phase2_user_dataset.py                 # sessions, aggregates, user table
 ```
 
-**Output**: Produces `Processed_URL_Variables_1_to_21.xlsx` containing all 337,581 raw user events enriched with the 21 engineered behavioral feature columns.
+Requires `pandas`, `openpyxl`, `pyarrow`. Each stage reads the previous stage's
+output from `output/` and writes QA alongside it.
+
+Anything a professor might reasonably want changed is a flag, not an edit:
+
+| flag | effect |
+|---|---|
+| `--session-timeout 60` | re-sessionize at a different inactivity threshold |
+| `--unresolved-fill 0` | fill unresolved characteristics with 0 instead of NULL |
+| `--lang-asset-paths` | also switch language state on `/es/` or `/en/` asset paths |
+| `--compare` | write a before/after against the inherited implementation |
+
+---
+
+## Reading the output safely
+
+Three properties of the dataset that are easy to misread.
+
+**`pages_X` counts confirmed 1s only.** Each ships beside `unknown_X`, the count
+of the user's pageviews where that characteristic could not be determined. A low
+`pages_X` can mean "didn't read that" or "we couldn't classify those pages" —
+`unknown_X` is how you tell. `pages_unattributable` and `pct_pages_classified`
+give the same picture overall; the median user is 95.8% classified.
+
+**The `time_X` columns overlap and must not be summed.** A page carrying several
+characteristics is counted in each, so the columns total about 1.41× real time.
+`total_time_observed` is the only valid denominator.
+
+**`provided_language` is not a pre-treatment covariate.** It reads `es` for 280
+users in pilot bucket 3 and 0 in bucket 2 — it encodes the treatment arm, not the
+borrower. Use `language_preference` from the applicant file, which is balanced
+across arms.
+
+---
+
+## Data quality, as measured
+
+| | |
+|---|---|
+| Events / users / distinct paths | 337,581 / 10,140 / 9,471 |
+| Paths coded by the professor | 103 |
+| Event coverage from those alone | 36.6% |
+| After sibling inference (DEC-G) | 68–89% depending on characteristic |
+| Inference accuracy, leave-one-out | 90.9% (169 of 186 held-out cells) |
+| Sessions at a 30-minute timeout | 34,436 |
+
+Every value carries a provenance stamp. Filtering to `__prov == 'coded'` returns
+the professor's original 103 paths exactly, so no analysis is locked into the
+inference.
+
+---
+
+## Known blockers
+
+Nine of the 42 variables cannot be built from the files in `data/`:
+
+1. **A LoanDocument-id → document-type lookup.** Every download path is
+   `/Download/LoanDocument/{numeric id}` with no type token; the inherited
+   regexes matched 0 of 337,581 rows. Blocks 4 variables.
+2. **A real milestone-date source.** `talkument_loan_applicants.xlsx` contains
+   no `Application_Date`, `LE_TIL_Sent_Date`, `Lock_Date` or
+   `Current_Status_Date` despite earlier documentation saying so. Blocks 5.
+3. **Coding for 28 content paths across 6 topics** — not blocking, but worth
+   8.45% of events. Prepared in `output/dictionary_review_for_professor.xlsx`.
+
+---
+
+## Documentation
+
+| File | Role |
+|---|---|
+| `CLAUDE.md` | Working rules, canonical column names, data hygiene |
+| `docs/Clickstream_Variable_Specification_v2.md` | Canonical variable definitions |
+| `docs/Project_Brief.md` | Status, defects, open decisions |
+| `docs/DECISIONS.md` | Every provisional choice — ID, rationale, evidence, reversal cost |
+| `docs/Phase2_Plan.md` | Sessionization and attribution design |
+| `output/codebook.csv` | Every output column, generated from code |
+
+Reference variables **by name, never by number** — three incompatible numbering
+schemes exist across the professor's sheet, the v2 spec, and this repository's
+history.

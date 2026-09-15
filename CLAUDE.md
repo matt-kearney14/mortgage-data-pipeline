@@ -7,7 +7,8 @@
 | 1 | `docs/Clickstream_Variable_Specification_v2.md` | Canonical variable definitions. Cite by section (§3, §7-B). |
 | 2 | `docs/Project_Brief.md` | Status, known defects, open decisions. |
 | 3 | `docs/DECISIONS.md` | Every provisional choice we have made. |
-| — | `README.md` | **INHERITED AND PARTLY WRONG.** Describes what the code currently does, not what it should do. Its variable numbering conflicts with the spec. Not a requirements document. Do not use it to resolve a question. |
+| 4 | `README.md` | Rewritten 2026-09-14 and now accurate: how to run the pipeline, how to read the output safely, what is blocked. Still not a requirements document — the spec outranks it. |
+| — | `output/codebook.csv` | Generated from code. Describes every output column. Never edit by hand. |
 
 Three incompatible numbering schemes exist (professor's sheet, v2 spec, repo README).
 **Always reference variables by name, never by number.** Say `Audio`, never "var 16"
@@ -89,37 +90,75 @@ docs/
   Project_Brief.md
   DECISIONS.md
   Clickstream_path_frequencies_and_coding_scheme.xlsx    tracked in git
+  Phase2_Plan.md       sessionization & attribution design
 diagnostics/           read-only analysis scripts
+  inventory.py             input inventory
+  coverage.py              dictionary coverage vs the event log
+  build_path_dictionary.py extends beta_coding to all 9,471 paths
   output/              gitignored
 output/                pipeline outputs, gitignored
-clickstream_processor.py    the entry point
+  path_dictionary_extended.csv   per-path flags + provenance  (pipeline INPUT)
+  phase1_url_features.parquet    event grain + URL characteristics
+  phase2_events.parquet          + session_id, time_on_page
+  phase2_sessions.parquet        one row per session
+  user_level_dataset.xlsx        one row per user  <- THE DELIVERABLE
+  codebook.csv                   all 81 columns, generated from code
+  variable_manifest.csv          provisional columns + decision ids
+  discrepancy_log.csv            paths with unresolved flags
+clickstream_processor.py    Phase 1 — URL-level characteristics
+phase2_user_dataset.py      Phase 2 — sessions, aggregates, user table
 ```
 
-`03_final_merge.py` does not exist. The README references it; the README is wrong.
-Configuration constants live at the top of `clickstream_processor.py`.
+Run order: `diagnostics/build_path_dictionary.py` → `clickstream_processor.py`
+→ `phase2_user_dataset.py`. Configuration constants live at the top of each;
+anything a professor might want changed is also a CLI flag.
 
 ---
 
 ## Classification dictionary
 
-**`coding_dictionary` is authoritative.** `beta_coding` was the professor
-experimenting and must not be read by the pipeline.
+**Corrected 2026-09-14.** This section previously said `coding_dictionary` is
+authoritative and `beta_coding` must not be read. That instruction was
+structurally impossible and is withdrawn — see DEC-C.
 
-The inherited code reads `beta_coding` and joins on the key `CODING SCHEME`.
-Both the sheet name and the key must be re-verified against `coding_dictionary` —
-its headers and key column may differ. Do not assume the column list in the
-existing `static_vars` array transfers.
+The two sheets are not parallel tables:
 
-Where the two sheets code the same path differently, that is a finding worth
-reporting, not a problem to reconcile silently.
+| sheet | rows | shape | role |
+|---|---|---|---|
+| `coding_dictionary` | 45 | one row per **variable** — a glossary. No `CODING SCHEME` column, no per-URL rows, no join key. | variable *definitions* only |
+| `beta_coding` | 104 | one row per **path**, binary flags across columns, keyed on `CODING SCHEME` | the per-path source |
+
+`coding_dictionary` cannot be joined to the event log on any key, so a pipeline
+reading only it would have no classification data at all. It is still valuable —
+it carries the professor's own wording, confirms `Audio` is meant to be a count,
+and holds his `????` flag on `ProcessRelated` — but it cannot drive the merge.
+
+**The pipeline reads `output/path_dictionary_extended.csv`**, built by
+`diagnostics/build_path_dictionary.py` from `beta_coding` plus sibling
+inference (DEC-G/H/I). It covers all 9,471 log paths and stamps every cell with
+a `__prov` provenance value. Filtering to `__prov == 'coded'` returns
+`beta_coding` exactly, so nothing is locked in.
+
+Known limits of `beta_coding`, all measured:
+- it matches **36.6%** of events on its own (100 of 9,471 distinct paths)
+- `LoanTermsRelated` and `CDDocument` are blank on **all 26** coded page rows
+- `English(Y/N)` is 1 and `Spanish (Y/N)` is 0 on **every** row — it carries no
+  language information whatsoever (DEC-I)
 
 ---
 
 ## Data hygiene
 
 1. **Never modify the source `.xlsx` files.** They are inputs.
-2. **Never silently default an unmapped path to 0.** Unmapped paths receive 0 for
-   FIXED flags *and* are written to a discrepancy log with hit counts.
+2. **Never silently default an unmapped path to 0.** **Amended 2026-09-14 —
+   this rule previously prescribed a 0-fill, which is itself the silent default
+   the rule exists to prevent (DEC-L).** Unresolved flags are emitted **NULL**
+   and written to `output/discrepancy_log.csv` with hit counts. A 0 asserts "we
+   measured this and the answer is no"; an unclassified path supports no such
+   claim. The old behaviour is still reachable as `--unresolved-fill 0`.
+   Measured cost of the 0-fill: `Goal_to_inform` carried 108,162 fabricated
+   zeros against 42,391 real ones, and the four download columns read as
+   337,581 measured zeros when not one row had been evaluated.
 3. **Sort key** for every order-dependent operation: `user_hash`, `eventdate`
    ascending, then original file row order as a stable tiebreaker. Apply before
    computing any sequential variable.
@@ -172,8 +211,19 @@ professor's "try 60 minutes instead" is a rerun rather than an edit.
 ### Still genuinely open
 
 - **`ProcessRelated`** (§7-E) — professor's call. Compute as declared in
-  `coding_dictionary`, output as `ProcessRelated_provisional`. Do not treat it as
-  the union of Borrower and Lender. Do not inherit the old 48-path list.
+  `beta_coding`, output as `ProcessRelated_provisional`. Do not treat it as the
+  union of Borrower and Lender. Do not inherit the old 48-path list.
+
+**Blocked on inputs we do not hold** — do not attempt workarounds, emit NULL:
+
+- **`LEDocument`, `CDDocument`, `LEDownload`, `CDDownload`** — every download
+  path is `/Download/LoanDocument/{numeric id}` with no type token. Needs an
+  id → document-type lookup (DEC-F).
+- **Five of six milestone timers** — `talkument_loan_applicants.xlsx` has no
+  milestone-date columns. `t_activation_to_last_access` is the exception and is
+  built (DEC-F).
+- **28 content paths across 6 uncoded topics** — routed to the professor in
+  `output/dictionary_review_for_professor.xlsx`.
 
 Everything else may be decided under the protocol above.
 
@@ -186,9 +236,17 @@ webpages_visited` passes trivially while English is computed as the complement o
 Spanish — it is not evidence of correctness. When writing a validation, state in a
 comment what would make it fail.
 
-Validate the language state machine against the activated-language field instead:
+Validate the language state machine against `provided_language` instead:
 compare each user's modal computed language to their account language and report
-the mismatch count.
+the mismatch count **within each language group**. Pooled, the population is
+98.7% English and the check cannot fail. Measured at the spec's switching rule:
+en 0.02%, es 11.48% — and the Spanish figure is a behavioural finding, not a
+defect, since all of it is users who explicitly requested `/translations/en`.
+
+**`provided_language` is not a pre-treatment covariate.** It reads `es` for 280
+users in pilot bucket 3 and 0 in bucket 2, so it encodes the treatment arm, not
+the borrower. Use `language_preference` from `talkument_loan_applicants.xlsx`
+for that — it is balanced across arms (2.68% / 2.74% / 2.80% Spanish).
 
 Diagnostics stay honest regardless of how reasonable the surrounding decisions
 were. Coverage rates, missingness rates, and QA results are reported as measured.

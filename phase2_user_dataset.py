@@ -279,7 +279,10 @@ def main() -> None:
     gb = br.groupby("user_hash")
     u["pilot_bucket"] = gb.bucket.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan
                                       ).reindex(u.index)
-    u["pilot_bucket_conflicting"] = gb.bucket.nunique().gt(1).reindex(u.index).fillna(False)
+    # reindex with fill_value rather than fillna: reindexing a bool series onto a
+    # wider index yields object dtype, and fillna on that is deprecated.
+    u["pilot_bucket_conflicting"] = (gb.bucket.nunique().gt(1)
+                                     .reindex(u.index, fill_value=False).astype(bool))
     u["language_preference"] = gb.language_preference.agg(
         lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
     u["state"] = gb.state.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
