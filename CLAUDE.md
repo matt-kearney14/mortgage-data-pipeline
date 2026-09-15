@@ -8,7 +8,7 @@
 | 2 | `docs/Project_Brief.md` | Status, known defects, open decisions. |
 | 3 | `docs/DECISIONS.md` | Every provisional choice we have made. |
 | 4 | `README.md` | Rewritten 2026-09-14 and now accurate: how to run the pipeline, how to read the output safely, what is blocked. Still not a requirements document — the spec outranks it. |
-| — | `output/codebook.csv` | Generated from code. Describes every output column. Never edit by hand. |
+| — | `user_level_dataset.xlsx` → **Data Dictionary** sheet | Generated from code. Explains every output column and names the input each blocked column waits on. Never edit by hand; edit `note()` calls in `phase2_user_dataset.py`. |
 
 Three incompatible numbering schemes exist (professor's sheet, v2 spec, repo README).
 **Always reference variables by name, never by number.** Say `Audio`, never "var 16"
@@ -101,8 +101,10 @@ output/                pipeline outputs, gitignored
   phase1_url_features.parquet    event grain + URL characteristics
   phase2_events.parquet          + session_id, time_on_page
   phase2_sessions.parquet        one row per session
-  user_level_dataset.xlsx        one row per user  <- THE DELIVERABLE
-  codebook.csv                   all 81 columns, generated from code
+  user_level_dataset.xlsx        THE DELIVERABLE — 2 sheets:
+                                   'User Data' one row per user
+                                   'Data Dictionary' every column explained
+  codebook.csv                   the Data Dictionary sheet, machine-readable
   variable_manifest.csv          provisional columns + decision ids
   discrepancy_log.csv            paths with unresolved flags
 clickstream_processor.py    Phase 1 — URL-level characteristics

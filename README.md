@@ -13,9 +13,14 @@ analysis of how mortgage borrowers engage with disclosure and education content.
 
 ## The deliverable
 
-`output/user_level_dataset.xlsx` — **10,140 users × 81 columns**, with
-`output/codebook.csv` documenting every column: definition, quality caveat, and
-the decision that produced it.
+`output/user_level_dataset.xlsx` — regenerated on every run, with two sheets:
+
+| sheet | contents |
+|---|---|
+| **User Data** | 10,140 users × 81 columns, one row per borrower. Filters on, header frozen. |
+| **Data Dictionary** | every column explained — definition, how to read it, and for anything not yet computable, exactly what input is needed. Blocked columns sort to the top. |
+
+`output/codebook.csv` is the same dictionary in machine-readable form.
 
 Thirteen columns are present but deliberately all-NULL — the four download
 characteristics and five milestone timers — because the source data for them does
@@ -108,7 +113,8 @@ Nine of the 42 variables cannot be built from the files in `data/`:
 | `docs/Project_Brief.md` | Status, defects, open decisions |
 | `docs/DECISIONS.md` | Every provisional choice — ID, rationale, evidence, reversal cost |
 | `docs/Phase2_Plan.md` | Sessionization and attribution design |
-| `output/codebook.csv` | Every output column, generated from code |
+| `user_level_dataset.xlsx` → Data Dictionary | Every output column explained, generated from code |
+| `output/codebook.csv` | The same, machine-readable |
 
 Reference variables **by name, never by number** — three incompatible numbering
 schemes exist across the professor's sheet, the v2 spec, and this repository's

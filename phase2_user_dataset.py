@@ -57,9 +57,17 @@ BLOCKED_MILESTONES = [
 CODEBOOK: list[dict] = []
 
 
-def note(column, level, definition, quality="", decision=""):
-    CODEBOOK.append(dict(column=column, level=level, definition=definition,
-                         quality_note=quality, decision_id=decision))
+def note(column, level, definition, quality="", decision="", waiting_on=""):
+    """Register a column in the codebook.
+
+    waiting_on is non-empty only for columns that cannot be computed yet; it
+    names the specific input required, so the dictionary sheet answers "why is
+    this blank" without anyone having to ask.
+    """
+    CODEBOOK.append(dict(column=column, level=level,
+                         status="Not yet available" if waiting_on else "Ready",
+                         definition=definition, how_to_read=quality,
+                         waiting_on=waiting_on, decision_id=decision))
 
 
 # ================================================================ sessionize
@@ -207,7 +215,10 @@ def main() -> None:
         u[f"time_{short}"] = (attr.assign(_t=attr.time_on_page.where(flag == 1))
                                   .groupby("user_hash")._t.sum())
         u[f"unknown_{short}"] = ev.assign(_u=flag.isna()).groupby("user_hash")._u.sum()
-        note(f"pages_{short}", "user", f"Pageviews where {short} == 1.",
+        extra = ("  This characteristic is flagged '????' in the professor's own coding "
+                 "sheet and is unresolved; it is output under a _provisional name."
+                 if short == "ProcessRelated" else "")
+        note(f"pages_{short}", "user", f"Pageviews where {short} == 1.{extra}",
              "Counts confirmed 1s only. Read together with unknown_" + short + ".", "DEC-Q")
         note(f"time_{short}", "user", f"Seconds spent on pages where {short} == 1. "
              "Audio-clip time is credited to the page that played the clip.",
@@ -244,19 +255,49 @@ def main() -> None:
          "Seconds from first to last pageview (spec var 37).",
          "Computable for every user; needs no external file.")
 
+    MILESTONE_DEFS = {
+        "t_application_to_activation":
+            "Seconds from the loan application date to the borrower's first Talkuments access.",
+        "t_activation_to_le_sent":
+            "Seconds from first access to the date the Loan Estimate / TIL was sent.",
+        "t_le_sent_to_first_le_visit":
+            "Seconds from the Loan Estimate being sent to the borrower's first visit to "
+            "an LE-related page on or after that date.",
+        "t_activation_to_lock":
+            "Seconds from first access to the rate lock date.",
+        "t_last_access_to_current_status":
+            "Seconds from the borrower's last access to the loan's current status date.",
+    }
+    WAIT_MILESTONE = ("A file containing the loan milestone dates (application, "
+                      "LE/TIL sent, lock, current status), joinable on loannumber or "
+                      "user_hash. talkument_loan_applicants.xlsx was expected to hold "
+                      "these but contains none of them.")
     for c in BLOCKED_MILESTONES:
         u[c] = pd.Series(pd.NA, index=u.index, dtype="Int64")
-        note(c, "user", "Milestone timer from the specification.",
-             "NOT COMPUTED. talkument_loan_applicants.xlsx contains no milestone-date "
-             "columns. Needs a source file before this can be built.", "DEC-F")
+        note(c, "user", MILESTONE_DEFS[c],
+             "Column is present but empty for every user so the schema stays stable. "
+             "These durations may legitimately be negative once built — do not clip.",
+             "DEC-F", WAIT_MILESTONE)
+    BLOCKED_DEFS = {
+        "LEDocument": "the page is a downloaded Loan Estimate document",
+        "CDDocument": "the page is a downloaded Closing Disclosure document",
+        "LEDownload": "the event is a download of a Loan Estimate",
+        "CDDownload": "the event is a download of a Closing Disclosure",
+    }
+    WAIT_DOCTYPE = ("A lookup from LoanDocument id to document type (Loan Estimate / "
+                    "Closing Disclosure / other), or an export of the document "
+                    "service's metadata. Every download path in the log is "
+                    "/Download/LoanDocument/{numeric id} and carries no type token, "
+                    "so the type cannot be recovered from the URL.")
     for c in BLOCKED_CHARACTERISTICS:
         u[f"pages_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
         u[f"time_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
-        note(f"pages_{c}", "user", f"Pageviews where {c} == 1.",
-             "NOT COMPUTED. Download URLs carry a numeric id and no document type; "
-             "needs a LoanDocument-id to document-type lookup.", "DEC-F")
-        note(f"time_{c}", "user", f"Seconds on pages where {c} == 1.",
-             "NOT COMPUTED. Same reason.", "DEC-F")
+        note(f"pages_{c}", "user", f"Pageviews where {BLOCKED_DEFS[c]}.",
+             "Column is present but empty for every user so the schema stays stable. "
+             "17,502 download events are waiting on this.", "DEC-F", WAIT_DOCTYPE)
+        note(f"time_{c}", "user", f"Seconds on pages where {BLOCKED_DEFS[c]}.",
+             "Column is present but empty for every user so the schema stays stable.",
+             "DEC-F", WAIT_DOCTYPE)
 
     # -------------------------------------------------- joinable attributes
     acct = (pd.read_excel(DATA / "talkument_useraccount.xlsx", sheet_name="users")
@@ -304,9 +345,15 @@ def main() -> None:
     u.to_parquet(OUT / "user_level_dataset.parquet", index=False)
 
     cb = pd.DataFrame(CODEBOOK).drop_duplicates("column")
-    cb["present_in_output"] = cb.column.isin(u.columns)
-    cb["non_null"] = cb.column.map(lambda c: int(u[c].notna().sum()) if c in u.columns else 0)
-    cb["coverage"] = (cb.non_null / len(u)).round(4)
+    cb["users_with_a_value"] = cb.column.map(
+        lambda c: int(u[c].notna().sum()) if c in u.columns else 0)
+    cb["coverage"] = (cb.users_with_a_value / len(u)).round(4)
+    cb = cb[["column", "status", "level", "definition", "how_to_read",
+             "waiting_on", "users_with_a_value", "coverage", "decision_id"]]
+    # order: blocked columns first, so what is missing is the first thing seen
+    cb = cb.sort_values(["status", "level", "column"],
+                        key=lambda s: s.map({"Not yet available": 0, "Ready": 1})
+                        if s.name == "status" else s)
     cb.to_csv(OUT / "codebook.csv", index=False)
 
     # timeout sensitivity, regenerated every run so the figure is never quoted alone
@@ -325,13 +372,73 @@ def main() -> None:
     pd.DataFrame(rows).to_csv(OUT / "session_timeout_sensitivity.csv", index=False)
 
     if not args.no_excel:
-        u.to_excel(OUT / "user_level_dataset.xlsx", index=False)
-        cb.to_excel(OUT / "codebook.xlsx", index=False)
+        write_workbook(u, cb, sess, args)
 
     qa(ev, sess, u, dropped, args)
     print(f"users {len(u):,}  columns {u.shape[1]}  sessions {len(sess):,}")
     print(f"dropped non-pageview rows: {dropped:,}")
     print(f"codebook entries: {len(cb)}")
+
+
+# ================================================================ workbook
+def write_workbook(u, cb, sess, args) -> None:
+    """One workbook, two sheets: the data, and the dictionary that explains it.
+
+    The dictionary travels with the data deliberately — a codebook in a separate
+    file gets separated from the data it describes.
+    """
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    path = OUT / "user_level_dataset.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as xl:
+        u.to_excel(xl, sheet_name="User Data", index=False)
+        cb.to_excel(xl, sheet_name="Data Dictionary", index=False)
+
+        head_font = Font(bold=True, color="FFFFFF", size=11)
+        head_fill = PatternFill("solid", fgColor="14202A")
+        wrap = Alignment(vertical="top", wrap_text=True)
+        top = Alignment(vertical="top")
+
+        # --- sheet 1: the data ---
+        ws = xl.sheets["User Data"]
+        for c in ws[1]:
+            c.font, c.fill = head_font, head_fill
+            c.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.freeze_panes = "B2"                     # hold user_hash and the header
+        ws.row_dimensions[1].height = 30
+        for i, col in enumerate(u.columns, start=1):
+            width = max(len(str(col)) + 2, 12)
+            ws.column_dimensions[get_column_letter(i)].width = min(width, 34)
+        ws.auto_filter.ref = ws.dimensions
+
+        # --- sheet 2: the dictionary ---
+        ws2 = xl.sheets["Data Dictionary"]
+        for c in ws2[1]:
+            c.font, c.fill = head_font, head_fill
+            c.alignment = Alignment(vertical="center", wrap_text=True)
+        ws2.freeze_panes = "A2"
+        ws2.row_dimensions[1].height = 30
+        widths = {"column": 34, "status": 18, "level": 10, "definition": 62,
+                  "how_to_read": 58, "waiting_on": 62, "users_with_a_value": 14,
+                  "coverage": 11, "decision_id": 12}
+        for i, col in enumerate(cb.columns, start=1):
+            ws2.column_dimensions[get_column_letter(i)].width = widths.get(col, 18)
+        blocked_fill = PatternFill("solid", fgColor="F7E8E5")
+        ready_fill = PatternFill("solid", fgColor="E6F0EA")
+        stat_i = list(cb.columns).index("status") + 1
+        for r in range(2, len(cb) + 2):
+            for c in range(1, len(cb.columns) + 1):
+                ws2.cell(r, c).alignment = wrap if c in (4, 5, 6) else top
+            cell = ws2.cell(r, stat_i)
+            cell.fill = blocked_fill if cell.value == "Not yet available" else ready_fill
+            cell.font = Font(bold=cell.value == "Not yet available")
+            ws2.row_dimensions[r].height = 46
+        ws2.auto_filter.ref = ws2.dimensions
+
+    n_blocked = int((cb.status == "Not yet available").sum())
+    print(f"  workbook: 'User Data' {u.shape[0]:,}x{u.shape[1]}  |  "
+          f"'Data Dictionary' {len(cb)} columns ({n_blocked} not yet available)")
 
 
 # ================================================================ QA
