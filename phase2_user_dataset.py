@@ -258,6 +258,26 @@ def main() -> None:
              "determined (path not classified).",
              "The denominator caveat for pages_/time_" + short + ".", "DEC-L")
 
+    # ---- AudioMp3 as a characteristic (spec §5 vars 32/33 list it among the 18)
+    # DEC-T. The parent-page rule (§5 var 33) sends an mp3 row's dwell to the page
+    # that played it, so under that rule alone time_AudioMp3 would be zero for
+    # everyone — which cannot be the intent, since the spec names AudioMp3 as one
+    # of the 18 expanded characteristics. time_AudioMp3 is therefore the raw dwell
+    # on mp3 rows: actual listening time. That time is ALSO credited to the parent
+    # page's characteristics, so this column overlaps them exactly as the other
+    # time_* columns overlap each other.
+    u["pages_AudioMp3"] = ev.assign(_f=ev.AudioMp3 == 1).groupby("user_hash")._f.sum()
+    u["time_AudioMp3"] = (ev.assign(_t=ev.time_on_page.where(ev.AudioMp3 == 1))
+                            .groupby("user_hash")._t.sum())
+    note("pages_AudioMp3", "user", "Pageviews that are an .mp3 request.",
+         "Identical to audio_clips_clicked by construction — the specification names "
+         "this same quantity twice, as var 15 expanded by var 32 and again as var 34. "
+         "Kept so all 18 expanded characteristics are present.", "DEC-T")
+    note("time_AudioMp3", "user", "Seconds spent on .mp3 rows — actual listening time.",
+         "Overlaps the other time_* columns by design: this same dwell is also credited "
+         "to the characteristics of the page that played the clip, per spec §5 var 33.",
+         "DEC-T")
+
     # what no characteristic can account for
     unknown_all = attr[CHARACTERISTICS].isna().all(axis=1)
     u["pages_unattributable"] = ev.assign(_x=unknown_all).groupby("user_hash")._x.sum()

@@ -562,3 +562,54 @@ language matters most. The error is an order of magnitude smaller.
 
 **Reversal cost:** Zero. It is a CLI flag; nothing downstream depends on which
 rule was used beyond the two language columns and their aggregates.
+
+---
+
+## DEC-T — `time_AudioMp3` is raw listening time, and overlaps the parent page's characteristics
+
+**Status:** Provisional. Resolves a tension inside the specification itself.
+
+**Choice:** `time_AudioMp3` is the dwell on `.mp3` rows — actual listening time.
+The same seconds are **also** credited to the characteristics of the page that
+played the clip, so this column overlaps the other `time_*` columns exactly as
+they already overlap one another. `pages_AudioMp3` is added alongside it and is
+identical to `audio_clips_clicked`.
+
+**Rationale:** Spec §5 expands vars 32 and 33 across 18 characteristics, and
+names `AudioMp3` (var 15) as one of them. But §5's audio rule says an mp3 row's
+duration is credited *only* to its parent page's characteristics, "never
+additionally to its own dictionary flags." Read strictly together, those two
+statements make `time_AudioMp3` zero for every user — which cannot be the
+intent, or the specification would not list the characteristic at all.
+
+The reading adopted: the parent-page rule exists so that listening time counts
+toward the *content category* that hosted the clip (a Loan Estimate explainer's
+audio should count as Loan Estimate time). It is not a statement that listening
+time should be unmeasurable. `time_AudioMp3` answers a different question — how
+long did this borrower spend listening — and both are worth having, provided the
+overlap is stated rather than discovered.
+
+`pages_AudioMp3` duplicating `audio_clips_clicked` is likewise the
+specification's own doing: the same quantity appears as var 15 expanded by var
+32, and again as var 34. Both names are kept so that all 18 expanded
+characteristics are present and a reader counting columns finds them.
+
+**Evidence:**
+- Measured: 258,622 seconds of listening across 878 borrowers (2.20% of total
+  observed time), median 99 seconds among those with any.
+- `pages_AudioMp3 == audio_clips_clicked` for all 10,140 users, verified.
+- With this added, all 18 of the specification's expanded characteristics have
+  both a `pages_` and a `time_` column; previously `AudioMp3` had neither.
+
+**Alternatives considered, rejected:**
+- Follow the parent-page rule strictly and emit `time_AudioMp3` as all zeros —
+  rejected; a column of zeros presented as a measure is the fabricated-value
+  failure this project has already corrected once (DEC-L).
+- Omit `AudioMp3` from the expansion entirely — rejected; the spec names it, and
+  silently shipping 17 of 18 is the kind of quiet incompleteness someone
+  discovers later by counting.
+- Stop crediting audio time to the parent page so the columns partition —
+  rejected; §5 is explicit, and the professor's own note is quoted there:
+  audio time is "associated with that page."
+
+**Reversal cost:** Very low. Two columns; no other variable depends on them.
