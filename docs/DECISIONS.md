@@ -554,7 +554,7 @@ language matters most. The error is an order of magnitude smaller.
   columns. Switching *to* Spanish is a clean measure — zero noise, by the bucket-2
   evidence — so it is exposed directly rather than left buried in the language
   state. 114 borrowers, 320 switches, mean 2.81 and max 20 among those who
-  toggled; all but 10 are in bucket 3, the rest having no resolvable arm.
+  toggled; all but 10 are in bucket 3, the rest having no resolvable bucket.
 - The codebook entries for `spanish_webpages_visited` and
   `english_webpages_visited` carry the caveat that Spanish exposure may be
   slightly overstated for those 114 borrowers, with the ~40-event headroom
