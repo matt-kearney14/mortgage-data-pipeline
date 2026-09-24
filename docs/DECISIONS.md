@@ -520,13 +520,45 @@ Spanish row there. The check cannot fail and is not evidence.
   that still leaves a 6.6% mismatch, and 15% of the events are not
   module-preceded anyway.
 
-**What would settle this:** confirmation of whether the application emits
-`/translations/en` when a module page loads, independently of any user action.
-If it does not, the arm-2 events need another explanation before `always` could
-be restored. If a user switching *back* to English emits the same path as a page
-load, the two are indistinguishable in this log and Spanish time will be
-slightly over-counted under `never` — the size of that over-count is the gap
-between the `never` and `not-paired-with-es` rows above, about 1,264 pageviews.
+**Settled 2026-09-24 by the project owner:** the tag appears **whenever the user
+chooses a new language**, in either direction. So a real switch back to English
+does emit `/translations/en` — the same path the app emits on page load. The two
+are therefore genuinely indistinguishable, and the question becomes how much
+real signal is buried in the noise. That is measurable.
+
+Arm 2 has no toggle, so its `/translations/en` rate is a pure noise baseline:
+**0.3061 per module pageview**. Applying that rate to arm 3's module pageviews
+predicts the arm-3 count if every event were noise:
+
+| | arm 2 (noise baseline) | arm 3 (toggle exists) |
+|---|---|---|
+| module pageviews | 29,676 | 30,774 |
+| `/translations/en` observed | 9,085 | 9,114 |
+| `/translations/en` predicted as pure noise | — | 9,420 |
+| **excess over noise** | — | **−306** |
+| `/translations/es` (clean signal) | 0 | 292 |
+
+**Arm 3 shows no excess whatever** — slightly fewer than noise alone predicts.
+At population level, switches back to English are not detectable. Narrowing to
+the 114 borrowers who ever touched Spanish, the only people who *can* switch
+back: 410 `/translations/en` observed against 370 predicted as noise, an excess
+of **about 40 events** — roughly 10% of that subgroup's events, and set against
+320 clean switches *to* Spanish.
+
+So `never` remains the default. It forgoes ~40 real English switches;
+`always` would manufacture ~370 false ones among exactly the users whose
+language matters most. The error is an order of magnitude smaller.
+
+**Consequences recorded in the output rather than left implicit:**
+- `language_switches_to_spanish` and `used_language_toggle` are new user-level
+  columns. Switching *to* Spanish is a clean measure — zero noise, by the arm-2
+  evidence — so it is exposed directly rather than left buried in the language
+  state. 114 borrowers, 320 switches, mean 2.81 and max 20 among those who
+  toggled; all but 10 are in arm 3, the rest having no resolvable arm.
+- The codebook entries for `spanish_webpages_visited` and
+  `english_webpages_visited` carry the caveat that Spanish exposure may be
+  slightly overstated for those 114 borrowers, with the ~40-event headroom
+  stated, and point at `used_language_toggle` for identifying them.
 
 **Reversal cost:** Zero. It is a CLI flag; nothing downstream depends on which
 rule was used beyond the two language columns and their aggregates.

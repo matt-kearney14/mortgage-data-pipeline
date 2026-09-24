@@ -162,13 +162,34 @@ def main() -> None:
     for c in ("spanish_webpages_visited", "english_webpages_visited"):
         note(c, "user", "Pageviews in that language, from the per-user language state "
              "machine seeded by the account's provided_language.",
-             "Exact and exhaustive: the two sum to webpages_visited.", "DEC-I/DEC-K/DEC-M")
+             "Exhaustive: the two always sum to webpages_visited. Caveat for the ~114 "
+             "borrowers who used the toggle — a switch back to English cannot be "
+             "distinguished from the app's own page-load request, so Spanish exposure "
+             "may be slightly overstated for them. Measured headroom is about 40 events "
+             "in total. See used_language_toggle.", "DEC-I/DEC-K/DEC-S")
     u["audio_clips_clicked"] = g.AudioMp3.sum()
     note("audio_clips_clicked", "user", "Count of .mp3 requests. Spec defines this as "
          "sum(AudioMp3), explicitly not sum(Audio).", "Exact; row-level test on the path.")
     u["days_accessed"] = g.eventdate.apply(lambda s: s.dt.date.nunique())
     note("days_accessed", "user", f"Distinct calendar dates with at least one event, "
          f"bucketed in {TIMEZONE}.", "eventdate is timezone-naive at second resolution.", "DEC-R")
+
+    # Switches TO Spanish are measured cleanly: /translations/es occurs 292 times
+    # in arm 3 and zero times in arm 2, so it carries no page-load noise at all
+    # (DEC-S). The reverse switch is not separable from noise and is not counted.
+    u["language_switches_to_spanish"] = (
+        ev.assign(_s=ev.path.str.startswith("/translations/es"))
+          .groupby("user_hash")._s.sum())
+    u["used_language_toggle"] = u.language_switches_to_spanish.gt(0)
+    note("language_switches_to_spanish", "user",
+         "Times the borrower explicitly switched the interface to Spanish.",
+         "Clean measure — this path occurs only where the toggle exists and carries no "
+         "page-load noise. The reverse switch back to English is NOT counted: the app "
+         "emits the same path on module page loads and the two are indistinguishable.",
+         "DEC-S")
+    note("used_language_toggle", "user",
+         "True if the borrower ever switched the interface to Spanish.",
+         "Only possible in pilot arm 3, which is the only arm with the toggle.", "DEC-S")
 
     u["num_sessions"] = g.session_id.nunique()
     note("num_sessions", "user", f"Distinct sessions at a {args.session_timeout}-minute "
