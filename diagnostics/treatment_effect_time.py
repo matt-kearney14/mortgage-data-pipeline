@@ -8,7 +8,7 @@ so the professors can see the specification, the assumptions, and the power,
 and disagree with any of them. Nothing here is a conclusion.
 
 Design
-  Treatment  pilot arm 3 (multilingual support)   vs   arm 2 (English only)
+  Treatment  pilot bucket 3 (multilingual support)   vs   bucket 2 (English only)
   Primary    Spanish-preference borrowers — the only group the treatment can
              plausibly affect. English speakers are the placebo group.
   Covariate  language_preference from the applicant file, which is
@@ -17,9 +17,9 @@ Design
   Test       Mann-Whitney U. Time and page counts are heavily right-skewed,
              so ranks are the appropriate comparison and medians the
              appropriate summary.
-  Excluded   Users whose loans span several arms (no clean assignment).
-             Arm 1 entirely: those borrowers had no software access, so they
-             have no clickstream. Arm 1 can only be compared on loan outcomes,
+  Excluded   Users whose loans span several buckets (no clean assignment).
+             Bucket 1 entirely: those borrowers had no software access, so they
+             have no clickstream. Bucket 1 can only be compared on loan outcomes,
              which are not present in any file we hold.
 """
 import numpy as np
@@ -55,9 +55,9 @@ def block(frame, title, note=""):
     if note:
         L.append(note); L.append("")
     a, b = frame[frame.pilot_bucket == 2], frame[frame.pilot_bucket == 3]
-    L.append(f"n = **{len(a)}** in arm 2 (English only), **{len(b)}** in arm 3 (multilingual)")
+    L.append(f"n = **{len(a)}** in bucket 2 (English only), **{len(b)}** in bucket 3 (multilingual)")
     L.append("")
-    L.append("| measure | median arm 2 | median arm 3 | mean arm 2 | mean arm 3 | p | min. detectable diff |")
+    L.append("| measure | median bucket 2 | median bucket 3 | mean bucket 2 | mean bucket 3 | p | min. detectable diff |")
     L.append("|---|---|---|---|---|---|---|")
     for col, label in MEASURES:
         x, y = a[col].dropna().astype(float), b[col].dropna().astype(float)
@@ -75,13 +75,13 @@ block(d[d.es_pref], "Primary comparison — Spanish-preference borrowers",
       "The group the treatment can actually reach.")
 block(d[d.language_preference == "English"], "Placebo — English-preference borrowers",
       "Multilingual support should be inert here. A significant result would "
-      "suggest the arms differ for some reason other than the treatment.")
+      "suggest the buckets differ for some reason other than the treatment.")
 
 # manipulation check
 L.append("## Manipulation check — was the treatment actually delivered?")
 L.append("")
 es = d[d.es_pref]
-L.append("| | arm 2 | arm 3 |")
+L.append("| | bucket 2 | bucket 3 |")
 L.append("|---|---|---|")
 for lbl, f in [("borrowers", lambda s: f"{len(s)}"),
                ("ever saw a Spanish page", lambda s: f"{100*(s.spanish_webpages_visited>0).mean():.1f}%"),
@@ -98,12 +98,12 @@ L.append("")
 L.append("Median session length is significant in BOTH groups. In the placebo group that")
 L.append("is a sample-size artifact, not an effect: n = 9,141 there, so the minimum")
 L.append("detectable difference is 27 seconds and a 9-second gap clears it. The honest")
-L.append("comparison is therefore not arm 3 vs arm 2 within Spanish speakers, but how much")
+L.append("comparison is therefore not bucket 3 vs bucket 2 within Spanish speakers, but how much")
 L.append("larger that gap is than the same gap among English speakers, who the treatment")
 L.append("cannot reach.")
 L.append("")
 rng = np.random.default_rng(20260924)          # seed fixed and declared (CLAUDE.md #8)
-L.append("| measure | Spanish arm2->arm3 | English arm2->arm3 | difference-in-differences | 95% CI (bootstrap) |")
+L.append("| measure | Spanish bucket2->bucket3 | English bucket2->bucket3 | difference-in-differences | 95% CI (bootstrap) |")
 L.append("|---|---|---|---|---|")
 esg, eng = d[d.es_pref], d[d.language_preference == "English"]
 for col, label in MEASURES:
@@ -136,7 +136,7 @@ L += ["## How to read this", "",
       "Seven measures are tested. At alpha = 0.05 one in twenty tests is expected to",
       "reach significance by chance alone; treat any single starred row accordingly.", "",
       "`total_time_observed` excludes the last page of every session, whose duration",
-      "is unobservable. It is a consistent undercount across both arms, so the",
+      "is unobservable. It is a consistent undercount across both buckets, so the",
       "comparison is valid, but the absolute level is not total time in the software.", "",
       "**Loan outcomes are not in scope.** No file in `data/` records whether a",
       "borrower's loan funded, closed, was denied or withdrawn. That question cannot",

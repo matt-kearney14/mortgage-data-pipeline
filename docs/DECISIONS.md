@@ -476,12 +476,12 @@ resource the page requests. Controlled by `--lang-en-switch`, default `never`;
 `always` restores the previous spec-literal behaviour, with `not-after-module`
 and `not-paired-with-es` available as middle positions.
 
-**Rationale:** The language toggle exists only in pilot arm 3. The log agrees:
-`/translations/es` occurs 292 times in arm 3 and **zero times in arm 2**. But
-`/translations/en` occurs at almost identical rates in both arms — **9,085 in
-arm 2 and 9,114 in arm 3** — and arm 2 users have no toggle to press. Whatever
+**Rationale:** The language toggle exists only in pilot bucket 3. The log agrees:
+`/translations/es` occurs 292 times in bucket 3 and **zero times in bucket 2**. But
+`/translations/en` occurs at almost identical rates in both buckets — **9,085 in
+bucket 2 and 9,114 in bucket 3** — and bucket 2 users have no toggle to press. Whatever
 generates those 9,085 events is not a user action. It is preceded by a
-`/Module/` page 85.0% of the time in arm 2 and 83.8% in arm 3, and 117 of the
+`/Module/` page 85.0% of the time in bucket 2 and 83.8% in bucket 3, and 117 of the
 119 cases where `/translations/en` directly follows `/translations/es` are **0
 seconds apart** — a single page load requesting both.
 
@@ -507,14 +507,14 @@ and stayed there." That was wrong. It was our own bug, and no such behaviour is
 evidenced. `output/qa_phase1.md` §1 now carries the correction inline.
 
 **A check that does not work, recorded so nobody re-runs it as evidence:**
-"Spanish pageviews appearing in arm 2" reads 0 under all four rules and looks
-like a passing discriminator. It is not. No arm-2 user has `provided_language =
-es` and `/translations/es` never occurs in arm 2, so no rule can produce a
+"Spanish pageviews appearing in bucket 2" reads 0 under all four rules and looks
+like a passing discriminator. It is not. No bucket-2 user has `provided_language =
+es` and `/translations/es` never occurs in bucket 2, so no rule can produce a
 Spanish row there. The check cannot fail and is not evidence.
 
 **Alternatives considered, rejected:**
 - Keep `always` per spec §3 — rejected; the spec's algorithm was written without
-  knowledge that the application emits this path on page load, and the arm-2
+  knowledge that the application emits this path on page load, and the bucket-2
   evidence is decisive that it does.
 - `not-after-module` — rejected as the default; it is a heuristic on adjacency
   that still leaves a 6.6% mismatch, and 15% of the events are not
@@ -526,11 +526,11 @@ does emit `/translations/en` — the same path the app emits on page load. The t
 are therefore genuinely indistinguishable, and the question becomes how much
 real signal is buried in the noise. That is measurable.
 
-Arm 2 has no toggle, so its `/translations/en` rate is a pure noise baseline:
-**0.3061 per module pageview**. Applying that rate to arm 3's module pageviews
-predicts the arm-3 count if every event were noise:
+Bucket 2 has no toggle, so its `/translations/en` rate is a pure noise baseline:
+**0.3061 per module pageview**. Applying that rate to bucket 3's module pageviews
+predicts the bucket-3 count if every event were noise:
 
-| | arm 2 (noise baseline) | arm 3 (toggle exists) |
+| | bucket 2 (noise baseline) | bucket 3 (toggle exists) |
 |---|---|---|
 | module pageviews | 29,676 | 30,774 |
 | `/translations/en` observed | 9,085 | 9,114 |
@@ -538,7 +538,7 @@ predicts the arm-3 count if every event were noise:
 | **excess over noise** | — | **−306** |
 | `/translations/es` (clean signal) | 0 | 292 |
 
-**Arm 3 shows no excess whatever** — slightly fewer than noise alone predicts.
+**Bucket 3 shows no excess whatever** — slightly fewer than noise alone predicts.
 At population level, switches back to English are not detectable. Narrowing to
 the 114 borrowers who ever touched Spanish, the only people who *can* switch
 back: 410 `/translations/en` observed against 370 predicted as noise, an excess
@@ -551,10 +551,10 @@ language matters most. The error is an order of magnitude smaller.
 
 **Consequences recorded in the output rather than left implicit:**
 - `language_switches_to_spanish` and `used_language_toggle` are new user-level
-  columns. Switching *to* Spanish is a clean measure — zero noise, by the arm-2
+  columns. Switching *to* Spanish is a clean measure — zero noise, by the bucket-2
   evidence — so it is exposed directly rather than left buried in the language
   state. 114 borrowers, 320 switches, mean 2.81 and max 20 among those who
-  toggled; all but 10 are in arm 3, the rest having no resolvable arm.
+  toggled; all but 10 are in bucket 3, the rest having no resolvable arm.
 - The codebook entries for `spanish_webpages_visited` and
   `english_webpages_visited` carry the caveat that Spanish exposure may be
   slightly overstated for those 114 borrowers, with the ~40-event headroom
