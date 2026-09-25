@@ -246,9 +246,9 @@ en 0.02%, es 11.48% — and the Spanish figure is a behavioural finding, not a
 defect, since all of it is users who explicitly requested `/translations/en`.
 
 **`provided_language` is not a pre-treatment covariate.** It reads `es` for 280
-users in pilot bucket 3 and 0 in bucket 2, so it encodes the treatment arm, not
+users in pilot bucket 3 and 0 in bucket 2, so it encodes the treatment bucket, not
 the borrower. Use `language_preference` from `talkument_loan_applicants.xlsx`
-for that — it is balanced across arms (2.68% / 2.74% / 2.80% Spanish).
+for that — it is balanced across buckets (2.68% / 2.74% / 2.80% Spanish).
 
 Diagnostics stay honest regardless of how reasonable the surrounding decisions
 were. Coverage rates, missingness rates, and QA results are reported as measured.

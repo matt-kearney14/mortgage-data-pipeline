@@ -22,7 +22,7 @@ engage with disclosure and education content.
 | `Clickstream_path_frequencies_and_coding_scheme.xlsx` | URL classification | tab `beta_coding`, key `CODING SCHEME`, 103 coded paths | ✅ but see DEC-C |
 | `talkument_useraccount.xlsx` | Account data — 21,263 rows | `first_login`, `last_login`, `expertise_level`, `provided_language` | ✅ — but no field named "activation"; `first_login` is the candidate |
 | `talkument_loan_applicants.xlsx` | Loan milestones | `loannumber`, `applicant_email_hash`, `user_hash`, `language_preference`, `city`, `state`, `postalcode` | ❌ **contains no milestone dates at all** |
-| `talkument_pilot_buckets.xlsx` | Pilot arm assignment — 27,650 rows, buckets {1,2,3} | `loan_number`, `bucket` | ⚠️ no `user_hash`; joins only via `loannumber` |
+| `talkument_pilot_buckets.xlsx` | Pilot bucket assignment — 27,650 rows, buckets {1,2,3} | `loan_number`, `bucket` | ⚠️ no `user_hash`; joins only via `loannumber` |
 
 **The `loan_applicants` row above is the correction that matters most.** This brief
 previously claimed the file carries `Application_Date`, `LE_TIL_Sent_Date`,

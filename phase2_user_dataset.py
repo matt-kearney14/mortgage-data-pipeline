@@ -40,10 +40,10 @@ SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the profes
 TIMEZONE = "UTC"              # DEC-R; eventdate is tz-naive, no input disagrees
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
 
-# Pilot arms. 2 and 3 are as described by the project owner; 1 is inferred from
-# the data (11,624 loans, only 9.3% with a user hash, and not one user whose only
-# bucket is 1) and has no rows in the user table by construction.
-PILOT_ARM_LABELS = {
+# Pilot buckets. 2 and 3 are as described by the project owner; 1 is inferred
+# from the data (90.7% of its loans carry no user_hash at all, versus ~1% in
+# buckets 2 and 3) and has no rows in the user table by construction.
+PILOT_BUCKET_LABELS = {
     1: "1 - No Talkument access",
     2: "2 - English only",
     3: "3 - Multilingual support",
@@ -189,7 +189,7 @@ def main() -> None:
          "DEC-S")
     note("used_language_toggle", "user",
          "True if the borrower ever switched the interface to Spanish.",
-         "Only possible in pilot arm 3, which is the only arm with the toggle.", "DEC-S")
+         "Only possible in pilot bucket 3, the only bucket with the toggle.", "DEC-S")
 
     u["num_sessions"] = g.session_id.nunique()
     note("num_sessions", "user", f"Distinct sessions at a {args.session_timeout}-minute "
@@ -257,6 +257,26 @@ def main() -> None:
         note(f"unknown_{short}", "user", f"Pageviews where {short} could not be "
              "determined (path not classified).",
              "The denominator caveat for pages_/time_" + short + ".", "DEC-L")
+
+    # ---- AudioMp3 as a characteristic (spec §5 vars 32/33 list it among the 18)
+    # DEC-T. The parent-page rule (§5 var 33) sends an mp3 row's dwell to the page
+    # that played it, so under that rule alone time_AudioMp3 would be zero for
+    # everyone — which cannot be the intent, since the spec names AudioMp3 as one
+    # of the 18 expanded characteristics. time_AudioMp3 is therefore the raw dwell
+    # on mp3 rows: actual listening time. That time is ALSO credited to the parent
+    # page's characteristics, so this column overlaps them exactly as the other
+    # time_* columns overlap each other.
+    u["pages_AudioMp3"] = ev.assign(_f=ev.AudioMp3 == 1).groupby("user_hash")._f.sum()
+    u["time_AudioMp3"] = (ev.assign(_t=ev.time_on_page.where(ev.AudioMp3 == 1))
+                            .groupby("user_hash")._t.sum())
+    note("pages_AudioMp3", "user", "Pageviews that are an .mp3 request.",
+         "Identical to audio_clips_clicked by construction — the specification names "
+         "this same quantity twice, as var 15 expanded by var 32 and again as var 34. "
+         "Kept so all 18 expanded characteristics are present.", "DEC-T")
+    note("time_AudioMp3", "user", "Seconds spent on .mp3 rows — actual listening time.",
+         "Overlaps the other time_* columns by design: this same dwell is also credited "
+         "to the characteristics of the page that played the clip, per spec §5 var 33.",
+         "DEC-T")
 
     # what no characteristic can account for
     unknown_all = attr[CHARACTERISTICS].isna().all(axis=1)
@@ -350,7 +370,7 @@ def main() -> None:
     gb = br.groupby("user_hash")
     u["pilot_bucket"] = (gb.bucket.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan)
                            .reindex(u.index).astype("Int64"))
-    u["pilot_arm"] = u.pilot_bucket.map(PILOT_ARM_LABELS)
+    u["pilot_bucket_label"] = u.pilot_bucket.map(PILOT_BUCKET_LABELS)
     # reindex with fill_value rather than fillna: reindexing a bool series onto a
     # wider index yields object dtype, and fillna on that is deprecated.
     u["pilot_bucket_conflicting"] = (gb.bucket.nunique().gt(1)
@@ -358,32 +378,32 @@ def main() -> None:
     u["language_preference"] = gb.language_preference.agg(
         lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
     u["state"] = gb.state.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
-    note("pilot_arm", "loan", "Plain-language name of the pilot arm.",
-         "Sort or filter on this, or on pilot_bucket. Arm 1 never appears: those "
+    note("pilot_bucket_label", "loan", "Plain-language name of the pilot bucket.",
+         "Sort or filter on this, or on pilot_bucket. Bucket 1 never appears: those "
          "borrowers had no Talkument access, so they generate no clickstream and have "
-         "no row in this table. Compare arm 1 on loan outcomes, not on this dataset.")
+         "no row in this table. Compare bucket 1 on loan outcomes, not on this dataset.")
     note("pilot_bucket", "loan", "Pilot arm number, bridged loan_number to loannumber.",
-         "NULL where a user holds loans in different arms. Bucket 1 never appears: those "
+         "NULL where a user holds loans in different buckets. Bucket 1 never appears: those "
          "borrowers had no Talkument access and so generate no clickstream.")
-    note("pilot_bucket_conflicting", "loan", "True if the user's loans span more than one arm.",
+    note("pilot_bucket_conflicting", "loan", "True if the user's loans span more than one bucket.",
          "567 users. Excluded from pilot_bucket rather than assigned a guess.")
     note("language_preference", "loan", "Applicant's stated language preference.",
-         "Pre-treatment and balanced across arms; the appropriate language covariate.")
+         "Pre-treatment and balanced across buckets; the appropriate language covariate.")
     note("state", "loan", "Applicant state.", "NULL where a user's loans disagree.")
 
     u = u.reset_index()
 
     # Grouping columns sit immediately after the id so the sheet can be sorted or
-    # filtered by arm without scrolling past 70 measure columns first.
-    FRONT = ["user_hash", "pilot_arm", "pilot_bucket", "pilot_bucket_conflicting",
+    # filtered by bucket without scrolling past 70 measure columns first.
+    FRONT = ["user_hash", "pilot_bucket", "pilot_bucket_label", "pilot_bucket_conflicting",
              "language_preference", "provided_language", "expertise_level",
              "account_enabled", "state"]
     u = u[FRONT + [c for c in u.columns if c not in FRONT]]
 
-    # carry the arm down to the event and session files too, so each stands alone
-    arm = u.set_index("user_hash").pilot_arm
-    ev["pilot_arm"] = ev.user_hash.map(arm)
-    sess["pilot_arm"] = sess.user_hash.map(arm)
+    # carry the bucket down to the event and session files too, so each stands alone
+    lbl = u.set_index("user_hash").pilot_bucket_label
+    ev["pilot_bucket_label"] = ev.user_hash.map(lbl)
+    sess["pilot_bucket_label"] = sess.user_hash.map(lbl)
 
     # ------------------------------------------------------------- outputs
     OUT.mkdir(exist_ok=True)

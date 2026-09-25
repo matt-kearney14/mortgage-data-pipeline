@@ -66,9 +66,9 @@ characteristics is counted in each, so the columns total about 1.41× real time.
 `total_time_observed` is the only valid denominator.
 
 **`provided_language` is not a pre-treatment covariate.** It reads `es` for 280
-users in pilot bucket 3 and 0 in bucket 2 — it encodes the treatment arm, not the
+users in pilot bucket 3 and 0 in bucket 2 — it encodes the treatment bucket, not the
 borrower. Use `language_preference` from the applicant file, which is balanced
-across arms.
+across buckets.
 
 ---
 
