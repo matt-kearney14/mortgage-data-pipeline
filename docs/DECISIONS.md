@@ -784,3 +784,58 @@ inference.
 
 **Reversal cost:** Zero. Filter on `downloads_type_inferred` to drop it entirely,
 or delete the four columns.
+
+---
+
+## DEC-Y — Exact replication of the paper's Table 2, and two errors it exposed in our own work
+
+**Status:** Settled. **This entry corrects two mistakes of ours.**
+
+**Choice:** Add `borrower_language` (the lender's loan-level language field) and
+`activated_talkument` (the lender's activation flag, with UNKNOWN preserved
+distinct from NO) to the user-level dataset, alongside the fields we already
+derived. Prefer `borrower_language` for loan-level work.
+
+**Rationale:** The paper's Table 2 is an external check on work we did
+independently, so reproducing it exactly is the strongest available evidence
+that our measures mean what we think. It now reproduces to two decimal places in
+**all twelve cells**:
+
+| | English-only | Bilingual | Any Aid |
+|---|---|---|---|
+| English | 53.70% | 54.43% | 54.07% |
+| Spanish | 62.95% | 71.79% | 67.47% |
+| Other | 50.70% | 50.50% | 50.60% |
+| Entire sample | 53.77% | 54.67% | 54.23% |
+
+Getting there required fixing two things we had wrong.
+
+**Error 1 — we scored unknown activation as "not activated."** 471 loans in the
+Talkuments buckets have a blank `Activated_Talkument`. Treating blank as "no"
+deflated every rate. Excluded properly, our borrower-level activation rate rises
+from the **46.8%** we reported to **48.0%**, and the loan-level figure lands
+exactly on the paper's 54.23%. This is the same silent-default failure as DEC-L,
+committed by us, in an analysis rather than the pipeline.
+
+**Error 2 — our "Other" language row was the wrong set of people.** We reported
+it 10-12 points above the paper. The paper counts loans with **no language
+recorded** under Other; we were dropping them. Folding them in, Other matches
+exactly at 50.60% on n=1,006. Our earlier "our Other groups are not the same set
+of people" was right about the cause and wrong to leave it there — it was
+resolvable.
+
+**Evidence:**
+- Language fields cross-validate at **99.72%** across 24,048 loans. The 68
+  disagreements are mostly loans where a co-applicant prefers Spanish but the
+  borrower does not, which is a definitional difference rather than an error.
+  Choosing between them moves the Spanish group by 22 loans against a base of
+  676 — a 4% swing in the group the study is about.
+- `at_least_one_activated` and `Activated_Talkument` agree 100%.
+- Our `first_login` measure agrees with the lender's activation field on all
+  16,953 loans where both exist, with zero disagreements.
+
+**A contribution back:** 471 loans carry no activation status from the lender,
+and 333 of the borrowers on them appear in our clickstream — they demonstrably
+used the software. Our data resolves gaps in theirs.
+
+**Reversal cost:** Zero. Both new columns are passthroughs.

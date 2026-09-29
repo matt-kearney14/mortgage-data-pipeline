@@ -444,7 +444,8 @@ def main() -> None:
     # Grouping columns sit immediately after the id so the sheet can be sorted or
     # filtered by bucket without scrolling past 70 measure columns first.
     FRONT = ["user_hash", "pilot_bucket", "pilot_bucket_label", "pilot_bucket_conflicting",
-             "loan_status", "loan_originated", "language_preference", "provided_language",
+             "loan_status", "loan_originated", "borrower_language", "language_preference",
+             "activated_talkument", "provided_language",
              "expertise_level", "account_enabled", "state"]
     FRONT = [c for c in FRONT if c in u.columns]
     u = u[FRONT + [c for c in u.columns if c not in FRONT]]
@@ -587,6 +588,35 @@ def attach_loan_data(u, ev, loans, appl):
          "Greater than 1 for about 7% of borrowers. All loan-level columns below "
          "describe only the EARLIEST of them by application date.", "DEC-V")
 
+    # DEC-Y: the lender's own loan-level language field. It reproduces the paper's
+    # Table 2 exactly, so it is the field to use for loan-level work; the applicant
+    # file's language_preference stays as the per-person alternative.
+    LANG = {"SpanishIndicator": "Spanish", "EnglishIndicator": "English",
+            "LanguageRefusalIndicator": "Refusal"}
+    blp = primary.Borrower_Language_Preference.reindex(u.index)
+    u["borrower_language"] = blp.map(lambda v: LANG.get(v, None if pd.isna(v) else "Other"))
+    note("borrower_language", "loan",
+         "The lender's language preference for the loan's borrower.",
+         "PREFER THIS for loan-level work: it reproduces the paper's Table 2 exactly, "
+         "to two decimals in all 12 cells. It agrees with the applicant file's "
+         "language_preference on 99.72% of loans; the 68 disagreements are mostly "
+         "loans where a co-applicant prefers Spanish but the borrower does not. Blank "
+         "where no language was recorded — the paper counts those under 'Other'.",
+         "DEC-Y")
+
+    # DEC-Y: activation status, with UNKNOWN kept distinct from NO.
+    at = primary.Activated_Talkument.reindex(u.index)
+    u["activated_talkument"] = pd.array(
+        np.where(at.isna(), pd.NA, at.eq("Yes")), dtype="boolean")
+    note("activated_talkument", "loan",
+         "Whether anyone on the loan activated Talkuments, per the lender.",
+         "BLANK means unknown, NOT 'no' — scoring blanks as 'no' understates activation "
+         "by about 1.2 points across the pilot. Agrees with our own first_login measure "
+         "on all 16,953 loans where both exist, with zero disagreements. NOTE: every "
+         "borrower in this file demonstrably used the software, so the 333 blanks here "
+         "are gaps in the lender's field that our clickstream resolves, not "
+         "non-activations.", "DEC-Y")
+
     STATUS = {"loan_status": "Loan_Status", "hmda_loan_type": "HMDA_Loan_Type",
               "hmda_loan_purpose": "HMDA_Loan_Purpose"}
     for out, src in STATUS.items():
@@ -674,7 +704,13 @@ def build_notes(u, sess) -> pd.DataFrame:
       "characteristic could not be determined. A low count can mean 'did not read it' OR "
       "'we could not classify it'. pct_pages_classified gives the overall picture; the "
       "median borrower is 95.8% classified.")
-    W("4. provided_language is NOT a covariate",
+    W("4a. Which language field to use",
+      "THREE exist and they are not interchangeable. borrower_language is the lender's "
+      "loan-level field and reproduces the paper's Table 2 exactly — use it for "
+      "loan-level work. language_preference is per applicant, from the applicant file, "
+      "and marks a loan Spanish if ANY applicant does; it agrees 99.72% of the time. "
+      "provided_language is the Talkuments account setting and is NOT a covariate at all:")
+    W("4b. provided_language is NOT a covariate",
       "It reads 'es' for 280 borrowers in bucket 3 and 0 in bucket 2, because only bucket "
       "3 offered Spanish. It encodes the treatment, not the borrower. Use "
       "language_preference from the applicant file, which is pre-treatment and balanced "
@@ -697,10 +733,12 @@ def build_notes(u, sess) -> pd.DataFrame:
       "the borrower first opens Talkuments, presumably triggering the invitation. The "
       "specification defines this variable in the opposite order, so its sign reads "
       "backwards. Negative durations throughout this file are real and have not been clipped.")
-    N("Fewer than half ever logged in",
-      "Of 21,674 borrowers given Talkuments, 10,264 (47.4%) logged in and 11,410 never "
-      "did. Confirmed by three independent fields, and matches the paper's activation "
-      "variable with zero disagreements across 16,953 loans.")
+    W("Fewer than half ever logged in — and blank is not 'no'",
+      "48.0% of borrowers given Talkuments logged in, once the 517 whose status is "
+      "UNKNOWN are excluded rather than scored as 'no'. Counting blanks as 'no' gives "
+      "46.8% and understates by 1.2 points — the same trap that made our first Table 2 "
+      "replication miss by 2 points. Our measure agrees with the lender's activation "
+      "field on all 16,953 loans where both exist, with zero disagreements.")
     N("Multi-loan borrowers",
       "7.2% hold more than one pilot loan and all loan-level columns describe their "
       "EARLIEST by application date. loans_in_pilot flags them. 1,180 borrowers hold "
@@ -710,6 +748,12 @@ def build_notes(u, sess) -> pd.DataFrame:
       "Spanish-preference borrowers are 2.58% of the pilot. After excluding those with "
       "loans in several buckets, 312 remain for language comparisons — 142 in bucket 2 "
       "and 170 in bucket 3. Adequate for large effects only.")
+
+    N("Our data can fill a gap in theirs",
+      "333 borrowers in this file have no activation status recorded by the lender, yet "
+      "they demonstrably used the software — they generated clickstream. Across the "
+      "whole pilot the lender has 471 loans with unknown activation. The clickstream "
+      "resolves them.")
 
     H("Still missing")
     N("Document type lookup",
