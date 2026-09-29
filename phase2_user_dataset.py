@@ -40,14 +40,22 @@ SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the profes
 TIMEZONE = "UTC"              # DEC-R; eventdate is tz-naive, no input disagrees
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
 
-# Pilot buckets. 2 and 3 are as described by the project owner; 1 is inferred
-# from the data (90.7% of its loans carry no user_hash at all, versus ~1% in
-# buckets 2 and 3) and has no rows in the user table by construction.
+# Pilot buckets. CONFIRMED 2026-09-29 against data/loan_application_data_partial.csv,
+# which names them directly: bucket 1 = "no talkument", 2 = "talkument",
+# 3 = "talkument_multi". The crosstab against pilot_buckets is perfectly
+# diagonal across all 25,318 loans, so these labels are measured, not inferred.
 PILOT_BUCKET_LABELS = {
-    1: "1 - No Talkument access",
-    2: "2 - English only",
-    3: "3 - Multilingual support",
+    1: "1 - No Talkument",
+    2: "2 - Talkument (English)",
+    3: "3 - Talkument multilingual",
 }
+
+LOAN_FILE = DATA / "loan_application_data_partial.csv"
+# Two date formats coexist in that file (DEC-U).
+DATE_COLS = {"Application_Date": "%m/%d/%Y",
+             "Current_Status_Date": "%d%b%Y %H:%M:%S",
+             "LE_TIL_Sent_Date": "%d%b%Y %H:%M:%S",
+             "Lock_Date": "%d%b%Y %H:%M:%S"}
 
 CHARACTERISTICS = [
     "Personalized", "GeneralFinancial", "MortgageRelated", "ProcessRelated_provisional",
@@ -322,12 +330,21 @@ def main() -> None:
                       "LE/TIL sent, lock, current status), joinable on loannumber or "
                       "user_hash. talkument_loan_applicants.xlsx was expected to hold "
                       "these but contains none of them.")
-    for c in BLOCKED_MILESTONES:
+    loans = load_loans()
+    BLOCKED_MILESTONES_NOW = [] if loans is not None else BLOCKED_MILESTONES
+
+    for c in BLOCKED_MILESTONES_NOW:
         u[c] = pd.Series(pd.NA, index=u.index, dtype="Int64")
         note(c, "user", MILESTONE_DEFS[c],
              "Column is present but empty for every user so the schema stays stable. "
              "These durations may legitimately be negative once built — do not clip.",
              "DEC-F", WAIT_MILESTONE)
+    if not BLOCKED_MILESTONES_NOW:
+        for c in BLOCKED_MILESTONES:
+            note(c, "user", MILESTONE_DEFS[c],
+                 "Signed seconds; negative values are real and must not be clipped. "
+                 "Computed from the user's EARLIEST pilot loan by application date "
+                 "(DEC-V); see loans_in_pilot for users holding several.", "DEC-V")
     BLOCKED_DEFS = {
         "LEDocument": "the page is a downloaded Loan Estimate document",
         "CDDocument": "the page is a downloaded Closing Disclosure document",
@@ -391,13 +408,18 @@ def main() -> None:
          "Pre-treatment and balanced across buckets; the appropriate language covariate.")
     note("state", "loan", "Applicant state.", "NULL where a user's loans disagree.")
 
+    # ------------------------------------------- loan outcomes & milestones
+    if loans is not None:
+        u = attach_loan_data(u, ev, loans, appl)
+
     u = u.reset_index()
 
     # Grouping columns sit immediately after the id so the sheet can be sorted or
     # filtered by bucket without scrolling past 70 measure columns first.
     FRONT = ["user_hash", "pilot_bucket", "pilot_bucket_label", "pilot_bucket_conflicting",
-             "language_preference", "provided_language", "expertise_level",
-             "account_enabled", "state"]
+             "loan_status", "loan_originated", "language_preference", "provided_language",
+             "expertise_level", "account_enabled", "state"]
+    FRONT = [c for c in FRONT if c in u.columns]
     u = u[FRONT + [c for c in u.columns if c not in FRONT]]
 
     # carry the bucket down to the event and session files too, so each stands alone
@@ -447,6 +469,104 @@ def main() -> None:
     print(f"users {len(u):,}  columns {u.shape[1]}  sessions {len(sess):,}")
     print(f"dropped non-pageview rows: {dropped:,}")
     print(f"codebook entries: {len(cb)}")
+
+
+# ================================================================ loans
+def load_loans():
+    """The loan-application extract: outcomes, milestone dates, rate and credit.
+
+    Returns None if the file is absent, so the pipeline still runs without it
+    and the affected columns fall back to all-NULL.
+    """
+    if not LOAN_FILE.exists():
+        return None
+    d = pd.read_csv(LOAN_FILE)
+    d = d[d.Loan_Number.notna()].copy()        # 39 trailing blank rows
+    d["loannumber"] = d.Loan_Number.astype("int64").astype(str)
+    for col, fmt in DATE_COLS.items():
+        d[col] = pd.to_datetime(d[col], format=fmt, errors="coerce")
+    # DEC-U: implausible values are nulled, not clipped, and counted in QA.
+    d.loc[d.APR > 30, "APR"] = np.nan
+    d.loc[d.Credit_Score_Decision < 300, "Credit_Score_Decision"] = np.nan
+    return d
+
+
+def attach_loan_data(u, ev, loans, appl):
+    """Loan outcomes and spec vars 38-42, attributed to one loan per borrower.
+
+    DEC-V: a borrower's loans are ordered by Application_Date and the EARLIEST
+    is used. 7.2% of borrowers hold more than one, and `loans_in_pilot` exposes
+    that so anyone can exclude them.
+    """
+    link = appl.dropna(subset=["user_hash"])[["user_hash", "loannumber"]].copy()
+    link["loannumber"] = link.loannumber.astype(str)
+    link = link.drop_duplicates()
+    m = link.merge(loans, on="loannumber", how="inner")
+
+    m = m.sort_values(["user_hash", "Application_Date"], kind="mergesort")
+    primary = m.drop_duplicates("user_hash", keep="first").set_index("user_hash")
+    counts = m.groupby("user_hash").loannumber.nunique()
+
+    u["loans_in_pilot"] = counts.reindex(u.index).astype("Int64")
+    note("loans_in_pilot", "user", "Number of the borrower's loans present in the "
+         "loan-application extract.",
+         "Greater than 1 for about 7% of borrowers. All loan-level columns below "
+         "describe only the EARLIEST of them by application date.", "DEC-V")
+
+    STATUS = {"loan_status": "Loan_Status", "hmda_loan_type": "HMDA_Loan_Type",
+              "hmda_loan_purpose": "HMDA_Loan_Purpose"}
+    for out, src in STATUS.items():
+        u[out] = primary[src].reindex(u.index)
+    st = primary.Loan_Status.reindex(u.index)
+    u["loan_originated"] = pd.array(st.eq("Loan Originated").where(st.notna()), dtype="boolean")
+    u["coapplicant"] = primary.Coapplicant.reindex(u.index).astype("Int64")
+    for out, src in [("credit_score", "Credit_Score_Decision"),
+                     ("interest_rate", "Interest_Rate"), ("apr", "APR")]:
+        u[out] = primary[src].reindex(u.index)
+
+    note("loan_status", "loan", "Final disposition of the loan application.",
+         "Six values; 'Loan Originated' is the funded outcome. THE STUDY'S OUTCOME "
+         "VARIABLE.", "DEC-V")
+    note("loan_originated", "loan", "True if loan_status is 'Loan Originated'.",
+         "Convenience binary over loan_status.", "DEC-V")
+    note("hmda_loan_type", "loan", "HMDA loan type: FHA, Conventional, VA, USDA-RHS or FSA.", "")
+    note("hmda_loan_purpose", "loan",
+         "HMDA purpose: Home Purchase, Cash-out refinancing, Refinancing, Home Improvement.", "")
+    note("coapplicant", "loan", "Lender's co-applicant flag for the loan.",
+         "Does NOT agree with counting distinct applicant hashes in "
+         "talkument_loan_applicants.xlsx — 2,303 loans flagged 1 show a single hash "
+         "and 1,601 flagged 0 show two. Prefer this field; see DEC-W.", "DEC-W")
+    note("credit_score", "loan", "Credit score used for the decision.",
+         "7 loans carried a 0 and were nulled rather than clipped (DEC-U).", "DEC-U")
+    note("interest_rate", "loan", "Note rate.",
+         "Null for 53% of loans — a rate exists only once the loan is locked.", "DEC-U")
+    note("apr", "loan", "Annual percentage rate.",
+         "One loan carried 1200.0 and was nulled rather than clipped (DEC-U).", "DEC-U")
+
+    # ---- spec vars 38-42 -------------------------------------------------
+    first = u["first_access"]; last = u["last_access"]
+    app = primary.Application_Date.reindex(u.index)
+    le = primary.LE_TIL_Sent_Date.reindex(u.index)
+    lock = primary.Lock_Date.reindex(u.index)
+    status = primary.Current_Status_Date.reindex(u.index)
+
+    def secs(a, b):
+        return (a - b).dt.total_seconds().astype("Int64")
+
+    u["t_application_to_activation"] = secs(first, app)
+    u["t_activation_to_le_sent"] = secs(le, first)
+    u["t_activation_to_lock"] = secs(lock, first)
+    u["t_last_access_to_current_status"] = secs(status, last)
+
+    # var 40: first LE-related pageview at or after the LE was sent (spec §5).
+    # Users whose only LE activity predates the send date get NULL, and that
+    # count is itself reported — it is a behavioural finding, not missingness.
+    le_ev = ev[ev.LoanEstimateRelated == 1][["user_hash", "eventdate"]]
+    le_map = le_ev.merge(le.rename("le_sent"), left_on="user_hash", right_index=True, how="inner")
+    after = le_map[le_map.eventdate >= le_map.le_sent]
+    first_after = after.groupby("user_hash").eventdate.min()
+    u["t_le_sent_to_first_le_visit"] = secs(first_after.reindex(u.index), le)
+    return u
 
 
 # ================================================================ workbook
@@ -577,6 +697,39 @@ def qa(ev, sess, u, dropped, args) -> None:
     L += ["", f"- median share of a user's pages classified: "
           f"**{u.pct_pages_classified.median():.1%}**",
           f"- users below 50% classified: {int((u.pct_pages_classified < 0.5).sum()):,}", ""]
+
+    if "loan_status" in u.columns:
+        L += ["## 7. Loan outcomes and milestone timers", "",
+              "FAILS IF a milestone timer is non-null for a user with no matched loan, "
+              "or if any timer was silently clipped at zero. Negative values are real: "
+              "the Loan Estimate is normally sent BEFORE the borrower first opens "
+              "Talkuments, which is what triggers the invitation.", ""]
+        L += ["| timer | non-null | median days | negative | min days |", "|---|---|---|---|---|"]
+        for c in ["t_activation_to_last_access", "t_application_to_activation",
+                  "t_activation_to_le_sent", "t_le_sent_to_first_le_visit",
+                  "t_activation_to_lock", "t_last_access_to_current_status"]:
+            v = u[c].dropna().astype(float)
+            L.append(f"| `{c}` | {len(v):,} ({len(v)/len(u):.1%}) | {v.median()/86400:,.1f} | "
+                     f"{int((v<0).sum()):,} ({(v<0).mean():.1%}) | {v.min()/86400:,.1f} |")
+        L.append("")
+        orphan = int((u[["t_application_to_activation"]].notna().any(axis=1)
+                      & u.loan_status.isna()).sum())
+        L.append(f"- timers set for a user with no matched loan: **{orphan:,}** "
+                 f"({'PASS' if orphan == 0 else 'FAIL'})")
+        L.append(f"- users with no loan match at all: {int(u.loan_status.isna().sum()):,} "
+                 f"({u.loan_status.isna().mean():.1%}) — the extract is partial, "
+                 "covering 25,318 of 27,650 pilot loans")
+        L.append("")
+        L += ["### Outcome distribution", "", "| status | users | share |", "|---|---|---|"]
+        vc = u.loan_status.value_counts()
+        for k, v in vc.items():
+            L.append(f"| {k} | {v:,} | {v/vc.sum():.1%} |")
+        L.append("")
+        L.append("Note the selection effect: origination among borrowers who opened "
+                 "Talkuments is far higher than among all pilot loans, because "
+                 "activating and progressing through the loan are both downstream of "
+                 "staying engaged. This is not a treatment effect.")
+        L.append("")
 
     (OUT / "qa_phase2.md").write_text("\n".join(L))
 

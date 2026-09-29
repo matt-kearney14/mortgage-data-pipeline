@@ -613,3 +613,105 @@ characteristics are present and a reader counting columns finds them.
   audio time is "associated with that page."
 
 **Reversal cost:** Very low. Two columns; no other variable depends on them.
+
+---
+
+## DEC-U — `loan_application_data_partial.csv`: parsing, and implausible values nulled not clipped
+
+**Status:** Settled where measurable; the coverage gap is a question for the data owner.
+
+**Choice:** The extract is read with two date formats — `Application_Date` is
+`%m/%d/%Y`, the other three are Stata-style `%d%b%Y %H:%M:%S`. 39 trailing rows
+with a null `Loan_Number` are dropped. One `APR` of 1200.0 and seven
+`Credit_Score_Decision` values of 0 are set to NULL rather than clipped or kept.
+
+**Rationale:** Every date column parses at 100% under those formats, so nothing
+is lost to coercion. The implausible values are unambiguous — an APR of 1200%
+and a credit score of 0 are not measurements — and CLAUDE.md's hygiene rules
+say an unknown is NULL, never a substituted number. Clipping the APR to 30
+would invent a value; keeping 1200 would wreck any mean.
+
+**Evidence:**
+- All four date columns parse with zero unparseable values.
+- Milestone ordering holds: `LE_TIL_Sent <= Current_Status` on all 25,318 loans;
+  `Application <= LE_TIL_Sent` on 25,294, with 24 violations left as-is.
+- `Interest_Rate` is null on 53.0% and `Lock_Date` on 52.5%, and 12,986 loans are
+  null on both — a rate exists only once a loan is locked, so this is structural
+  missingness, not a defect.
+
+**Coverage, for the record:** the extract holds 25,318 of the 27,650 pilot loans
+(91.6%). The 2,332 missing split 1,243 / 541 / 548 across buckets 1 / 2 / 3, so
+they are not concentrated in one arm. 214 of our 10,140 clickstream users (2.1%)
+reach no loan in the extract.
+
+**Reversal cost:** Zero — re-run when a complete extract arrives.
+
+---
+
+## DEC-V — Loan-level variables come from the borrower's EARLIEST pilot loan
+
+**Status:** Provisional. Affects the 7.2% of borrowers holding several loans.
+
+**Choice:** A borrower's loans are ordered by `Application_Date` and the
+earliest is used for `loan_status`, the milestone timers, and every other
+loan-level column. `loans_in_pilot` reports how many they hold, so anyone can
+restrict to single-loan borrowers.
+
+**Rationale:** The clickstream is per person and cannot be split per loan — a
+borrower generates one browsing history regardless of how many applications
+they have. Some rule is required. The earliest application is the one whose
+disclosure journey the Talkuments invitation belongs to, and it is the only
+choice that does not depend on outcomes (picking "the originated one" would
+select on the dependent variable).
+
+**Evidence:** 1,577 borrowers (7.2%) hold more than one pilot loan; 1,180 of
+those have loans in more than one bucket. Those 1,180 are already excluded from
+bucket comparisons by `pilot_bucket_conflicting`.
+
+**Alternatives considered, rejected:**
+- Most recent loan — rejected; later applications are more likely to be
+  re-tries after a failure, which correlates with the outcome.
+- The loan matching the assigned bucket — rejected; circular for the 1,180
+  borrowers whose loans span buckets, which is exactly the group it would help.
+- Explode to loan grain — rejected; it would duplicate each borrower's
+  clickstream across their loans and inflate every behavioural measure.
+
+**Reversal cost:** Low. One `sort_values` and one `drop_duplicates`.
+
+---
+
+## DEC-W — The lender's `Coapplicant` flag supersedes counting applicant hashes
+
+**Status:** Settled. **Corrects an inference we reported.**
+
+**Choice:** Co-applicant status comes from the extract's `Coapplicant` field.
+Counting distinct `applicant_email_hash` values per loan is not used for this.
+
+**Rationale:** We previously inferred co-borrowers by counting distinct hashes
+per loan and reported that 24.0% of loans have two or more people, with 349
+having three or more. The lender's own flag does not agree:
+
+| | 1 hash | 2 hashes | 3+ hashes |
+|---|---|---|---|
+| `Coapplicant` = 0 | 16,818 | **1,601** | **155** |
+| `Coapplicant` = 1 | **2,303** | 4,259 | 180 |
+
+2,303 loans the lender flags as having a co-applicant show a single hash, and
+1,601 flagged as having none show two. So the hash count is not a reliable
+count of people on the loan — most likely because
+`talkument_loan_applicants.xlsx` lists only parties who were given a Talkuments
+identity, which is not the same set as the applicants on the mortgage.
+
+**Retraction.** The professor's scepticism about loans with three or more
+borrowers was well founded. Our "3+ people" figure is not evidence of
+multi-borrower lending; 155 such loans carry no co-applicant at all according to
+the lender. We also cited address incoherence as supporting evidence, which was
+itself unsound — city differs for the *same person on the same loan* in 77% of
+duplicate-row cases, so the address field cannot support that argument either.
+
+**What survives:** counting people and counting loans still give different
+activation rates, and that distinction is what reconciled our numbers against
+the paper's Table 2. The unit-of-analysis point stands; the co-borrower
+explanation for it does not.
+
+**Reversal cost:** Zero — `coapplicant` is a passthrough column.
