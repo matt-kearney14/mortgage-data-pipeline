@@ -715,3 +715,72 @@ the paper's Table 2. The unit-of-analysis point stands; the co-borrower
 explanation for it does not.
 
 **Reversal cost:** Zero — `coapplicant` is a passthrough column.
+
+---
+
+## DEC-X — `LEDownload` / `CDDownload` are inferred from session context, and the id-ordering step was tested and rejected
+
+**Status:** Provisional and clearly labelled as inferred in the deliverable.
+
+**Choice:** Classify a `/Download/LoanDocument/{id}` event by the most recent
+Loan-Estimate-related or Closing-Disclosure-related pageview **within the same
+session**, then settle each document by majority vote across all its downloads
+and apply that one answer everywhere the document appears. Events with no
+context stay NULL. Every affected borrower carries
+`downloads_type_inferred`, and the codebook marks the columns INFERRED, NOT
+MEASURED.
+
+`LEDocument` and `CDDocument` are deliberately left NULL as the measured-only
+counterparts, so an inferred value and a factual one are never confused.
+
+**Rationale:** Spec §3 anticipates exactly this case and prescribes the
+session-bounded fallback, requiring a `download_type_inferred` flag. The
+inherited implementation used `shift(1)` instead, which classifies only 8.9% of
+downloads because the row immediately before a download is almost always
+`/translations/en` (7,942 times) or `/Dashboard` (4,003) rather than content.
+The document vote was added because a document has exactly one true type, so
+disagreement between occasions is the rule's own error made visible.
+
+**Evidence:**
+
+| step | events classified | self-consistency |
+|---|---|---|
+| inherited `shift(1)` | 1,741 (8.9%) | — |
+| session context | 13,291 (75.9%) | 87.0% |
+| **+ document vote** | **14,439 (82.5%)** | **100% by construction** |
+
+- 4,508 borrowers gain a value; 7,276 of 9,158 documents resolved; 177 tied and
+  left NULL.
+- **Independent corroboration:** using the `LE_TIL_Sent_Date` from the loan
+  extract, which played no part in building the rule, CD-labelled downloads land
+  a median 29.8 days after the Loan Estimate was sent and LE-labelled ones 17.7
+  days. Closing follows disclosure, which is the expected ordering.
+
+**Rejected after testing — id-ordering placement.** Document ids correlate 0.95
+with time, and among borrowers holding both a labelled LE and a labelled CD the
+LE id is lower 96.4% of the time. That ordering is real. But using it to
+*classify* an unlabelled document by proximity to a labelled one fails a holdout
+test: **62.6% accuracy against 50% chance**, with 1,009 of 2,154 LE documents
+misclassified. Ordering between two known types does not generalise to
+identifying an unknown one, and the step is not used. It would have added 1,683
+events — not worth a coin-flip.
+
+**Structural finding, reported rather than exploited:** in this data
+`LEDocument` is identical to `LEDownload` row-for-row, and `CDDocument` to
+`CDDownload`, because every borrower-document path is already a download — the
+only other downloads are generic samples (CFPB toolkit and similar) that belong
+to no borrower. The specification's four download variables therefore describe
+two distinct quantities here. Worth the professor knowing independently of the
+inference.
+
+**Alternatives considered, rejected:**
+- Timing alone (a download near `LE_TIL_Sent_Date` is an LE) — rejected;
+  downloads occur a median 25 days after the send date with quartiles at 12 and
+  38, far too broad to classify.
+- Keep everything NULL pending the lookup — rejected; the spec prescribes this
+  fallback, the flag makes it reversible, and 82.5% coverage on 4,508 borrowers
+  is real information.
+- Fill the unclassified 17.5% by any means — rejected; NULL is the honest value.
+
+**Reversal cost:** Zero. Filter on `downloads_type_inferred` to drop it entirely,
+or delete the four columns.

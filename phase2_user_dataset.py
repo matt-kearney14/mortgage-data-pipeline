@@ -137,6 +137,7 @@ def main() -> None:
     ev = ev[ev.row_class != "non_pageview"].reset_index(drop=True)
 
     ev = sessionize(ev, timeout_s)
+    ev = infer_download_type(ev)          # DEC-X
     parent = parent_page_index(ev)
 
     # ---------------------------------------------------------- session level
@@ -356,15 +357,41 @@ def main() -> None:
                     "service's metadata. Every download path in the log is "
                     "/Download/LoanDocument/{numeric id} and carries no type token, "
                     "so the type cannot be recovered from the URL.")
+    INFERRED_CAVEAT = (
+        "INFERRED, NOT MEASURED. The download URL carries no document type, so the "
+        "type is taken from the last Loan Estimate or Closing Disclosure page the "
+        "borrower viewed in the same session, then settled per document by majority "
+        "vote. Covers 82.5% of download events; the rest are NULL, not guessed. "
+        "Validated at 87.0% self-consistency, and Closing Disclosure downloads land "
+        "a median 12 days later than Loan Estimate ones, as they should. Set "
+        "downloads_type_inferred to 0 to exclude these entirely.")
     for c in BLOCKED_CHARACTERISTICS:
-        u[f"pages_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
-        u[f"time_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
-        note(f"pages_{c}", "user", f"Pageviews where {BLOCKED_DEFS[c]}.",
-             "Column is present but empty for every user so the schema stays stable. "
-             "17,502 download events are waiting on this.", "DEC-F", WAIT_DOCTYPE)
-        note(f"time_{c}", "user", f"Seconds on pages where {BLOCKED_DEFS[c]}.",
-             "Column is present but empty for every user so the schema stays stable.",
-             "DEC-F", WAIT_DOCTYPE)
+        if c in ("LEDownload", "CDDownload"):
+            flag = (ev[c].fillna(False)).astype(bool)
+            u[f"pages_{c}"] = ev.assign(_f=flag).groupby("user_hash")._f.sum()
+            u[f"time_{c}"] = (ev.assign(_t=ev.time_on_page.where(flag))
+                                .groupby("user_hash")._t.sum())
+            note(f"pages_{c}", "user", f"Downloads where {BLOCKED_DEFS[c]}.",
+                 INFERRED_CAVEAT, "DEC-X")
+            note(f"time_{c}", "user", f"Seconds on downloads where {BLOCKED_DEFS[c]}.",
+                 INFERRED_CAVEAT, "DEC-X")
+        else:
+            u[f"pages_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
+            u[f"time_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
+            note(f"pages_{c}", "user", f"Pageviews where {BLOCKED_DEFS[c]}.",
+                 "NOT COMPUTED — kept as the measured-only counterpart of "
+                 f"pages_{c.replace('Document','Download')}, which is inferred. In this "
+                 "data the two would be identical row-for-row, since every borrower "
+                 "document path is already a download.", "DEC-F", WAIT_DOCTYPE)
+            note(f"time_{c}", "user", f"Seconds on pages where {BLOCKED_DEFS[c]}.",
+                 "NOT COMPUTED. Same reason.", "DEC-F", WAIT_DOCTYPE)
+
+    u["downloads_type_inferred"] = (ev.assign(_x=ev.download_type_inferred.fillna(False))
+                                      .groupby("user_hash")._x.sum())
+    note("downloads_type_inferred", "user",
+         "How many of the borrower's downloads had their type inferred.",
+         "Use this to exclude inferred values: pages_LEDownload and pages_CDDownload "
+         "are built entirely from these events.", "DEC-X")
 
     # -------------------------------------------------- joinable attributes
     acct = (pd.read_excel(DATA / "talkument_useraccount.xlsx", sheet_name="users")
@@ -471,6 +498,53 @@ def main() -> None:
     print(f"codebook entries: {len(cb)}")
 
 
+# ================================================================ downloads
+def infer_download_type(ev: pd.DataFrame) -> pd.DataFrame:
+    """Spec §3 fallback: classify a document download when the URL cannot.
+
+    Download paths are /Download/LoanDocument/{id} and carry no type token, so
+    LE and CD downloads are indistinguishable from the URL (DEC-F). §3 prescribes
+    a fallback — use the most recent LE-related or CD-related pageview within the
+    same session — and requires a `download_type_inferred` flag on the output.
+
+    Two steps, both validated (DEC-X):
+      1. session context   the last LE/CD page before the download, same session
+      2. document vote     a document has ONE type, so take the majority across
+                           all its downloads and apply it everywhere, which both
+                           removes self-contradiction and lifts coverage
+
+    A third step — placing unlabelled documents by id proximity to a labelled one
+    — was tested and REJECTED: 62.6% holdout accuracy against 50% chance, with
+    1,009 of 2,154 LE documents misclassified. It is not used.
+    """
+    ev = ev.sort_values(["user_hash", "eventdate", "_source_row"]).reset_index(drop=True)
+    is_doc = ev.path.str.startswith("/Download/LoanDocument/")
+
+    le = (ev.LoanEstimateRelated.fillna(0) == 1).values
+    cd = (ev.CDRelated.fillna(0) == 1).values
+    ctx = pd.Series(np.where(le, "LE", np.where(cd, "CD", None)), index=ev.index)
+    # the last qualifying page BEFORE this row, bounded by the session
+    prior = (ctx.groupby([ev.user_hash, ev.session_id]).shift(1)
+                .groupby([ev.user_hash, ev.session_id]).ffill())
+
+    doc_id = ev.path.str.extract(r"/(\d+)$")[0]
+    seen = pd.DataFrame({"doc_id": doc_id[is_doc], "guess": prior[is_doc]}).dropna()
+    tally = seen.groupby(["doc_id", "guess"]).size().unstack(fill_value=0)
+    for c in ("LE", "CD"):
+        if c not in tally:
+            tally[c] = 0
+    winner = pd.Series(np.where(tally.LE > tally.CD, "LE",
+                       np.where(tally.CD > tally.LE, "CD", None)), index=tally.index)
+
+    typ = pd.Series(pd.NA, index=ev.index, dtype="object")
+    typ[is_doc] = doc_id[is_doc].map(winner)
+
+    ev["LEDownload"] = pd.array(np.where(typ.isna(), pd.NA, typ == "LE"), dtype="boolean")
+    ev["CDDownload"] = pd.array(np.where(typ.isna(), pd.NA, typ == "CD"), dtype="boolean")
+    ev["download_type_inferred"] = pd.array(np.where(typ.notna(), True, pd.NA), dtype="boolean")
+    return ev
+
+
 # ================================================================ loans
 def load_loans():
     """The loan-application extract: outcomes, milestone dates, rate and credit.
@@ -569,6 +643,88 @@ def attach_loan_data(u, ev, loans, appl):
     return u
 
 
+def build_notes(u, sess) -> pd.DataFrame:
+    """The 'Read Me First' sheet. The professor reads the workbook, not the repo,
+    so every caveat that could change a conclusion has to live here."""
+    R = []
+    def H(t): R.append(("", t, "H"))
+    def N(k, v): R.append((k, v, "N"))
+    def W(k, v): R.append((k, v, "W"))
+
+    H("What this file is")
+    N("Grain", f"ONE ROW PER BORROWER who opened Talkuments — {len(u):,} people, "
+               f"{u.shape[1]} columns. It is NOT one row per loan.")
+    N("Sheets", "'User Data' is the data. 'Data Dictionary' defines every column, "
+                "says how to read it, and names what any empty column is waiting on.")
+    N("Source", "Talkument clickstream (337,581 events), the borrower account file, "
+                "the pilot bucket assignment, and the loan application extract.")
+
+    H("Five things to check before you analyse")
+    W("1. Person vs loan",
+      "This file is per person; activation tables in the paper are per loan. A loan can "
+      "have several applicants and a person can hold several loans, so the two give "
+      "different rates — we reconciled 46.3% (per person) against 54.23% (per loan). "
+      "Aggregate to the loan before comparing against loan-level tables.")
+    W("2. Do not sum the time_ columns",
+      "A page can carry several characteristics, so time_ columns overlap by design and "
+      "total about 1.4x real time. Use total_time_observed as the denominator, never the "
+      "sum of the parts. Same applies to the pages_ columns.")
+    W("3. pages_X counts only confirmed cases",
+      "Each pages_X has a matching unknown_X giving the pageviews where that "
+      "characteristic could not be determined. A low count can mean 'did not read it' OR "
+      "'we could not classify it'. pct_pages_classified gives the overall picture; the "
+      "median borrower is 95.8% classified.")
+    W("4. provided_language is NOT a covariate",
+      "It reads 'es' for 280 borrowers in bucket 3 and 0 in bucket 2, because only bucket "
+      "3 offered Spanish. It encodes the treatment, not the borrower. Use "
+      "language_preference from the applicant file, which is pre-treatment and balanced "
+      "across buckets (2.68% / 2.74% / 2.80% Spanish).")
+    W("5. Two columns are inferred, not measured",
+      "pages_LEDownload, pages_CDDownload and their time_ counterparts. Download URLs "
+      "carry no document type, so the type comes from the last Loan Estimate or Closing "
+      "Disclosure page viewed in the same session. 82.5% of downloads covered, 87.0% "
+      "self-consistent. downloads_type_inferred says how many of a borrower's downloads "
+      "this applies to — set it to 0 to exclude them.")
+
+    H("Findings that affect interpretation")
+    W("Origination looks high here",
+      f"{100*u.loan_originated.mean():.1f}% of borrowers in this file originated, against "
+      "about 47% across all pilot loans. That is selection, NOT a treatment effect: "
+      "activating Talkuments and progressing through a loan are both downstream of "
+      "staying engaged. Bucket 1 borrowers never had access and do not appear here at all.")
+    W("The Loan Estimate precedes activation",
+      "t_activation_to_le_sent is negative for 99.8% of borrowers — the LE is sent BEFORE "
+      "the borrower first opens Talkuments, presumably triggering the invitation. The "
+      "specification defines this variable in the opposite order, so its sign reads "
+      "backwards. Negative durations throughout this file are real and have not been clipped.")
+    N("Fewer than half ever logged in",
+      "Of 21,674 borrowers given Talkuments, 10,264 (47.4%) logged in and 11,410 never "
+      "did. Confirmed by three independent fields, and matches the paper's activation "
+      "variable with zero disagreements across 16,953 loans.")
+    N("Multi-loan borrowers",
+      "7.2% hold more than one pilot loan and all loan-level columns describe their "
+      "EARLIEST by application date. loans_in_pilot flags them. 1,180 borrowers hold "
+      "loans in different buckets and are excluded from bucket comparisons "
+      "(pilot_bucket_conflicting).")
+    N("Spanish is a small group",
+      "Spanish-preference borrowers are 2.58% of the pilot. After excluding those with "
+      "loans in several buckets, 312 remain for language comparisons — 142 in bucket 2 "
+      "and 170 in bucket 3. Adequate for large effects only.")
+
+    H("Still missing")
+    N("Document type lookup",
+      "A table mapping LoanDocument id to document type would replace the inferred "
+      "download columns with measured ones, and fill pages_LEDocument / pages_CDDocument, "
+      "the only columns still entirely empty. Note these two would be identical to the "
+      "LEDownload / CDDownload pair in this data, since every borrower document path is "
+      "already a download.")
+    N("Coverage of the loan extract",
+      "It covers 25,318 of 27,650 pilot loans (91.6%). The 2,332 missing are spread "
+      "evenly across buckets, so no bucket is favoured. 214 borrowers here reach no loan.")
+
+    return pd.DataFrame(R, columns=["Topic", "Detail", "kind"])
+
+
 # ================================================================ workbook
 def write_workbook(u, cb, sess, args) -> None:
     """One workbook, two sheets: the data, and the dictionary that explains it.
@@ -579,8 +735,10 @@ def write_workbook(u, cb, sess, args) -> None:
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
 
+    notes = build_notes(u, sess)
     path = OUT / "user_level_dataset.xlsx"
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
+        notes.to_excel(xl, sheet_name="Read Me First", index=False)
         u.to_excel(xl, sheet_name="User Data", index=False)
         cb.to_excel(xl, sheet_name="Data Dictionary", index=False)
 
@@ -588,6 +746,32 @@ def write_workbook(u, cb, sess, args) -> None:
         head_fill = PatternFill("solid", fgColor="14202A")
         wrap = Alignment(vertical="top", wrap_text=True)
         top = Alignment(vertical="top")
+
+        # --- sheet 0: the notes ---
+        ws0 = xl.sheets["Read Me First"]
+        ws0.column_dimensions["A"].width = 30
+        ws0.column_dimensions["B"].width = 108
+        from openpyxl.styles import Border, Side
+        for r in range(1, len(notes) + 2):
+            a = ws0.cell(r, 1); b = ws0.cell(r, 2)
+            b.alignment = Alignment(vertical="top", wrap_text=True)
+            a.alignment = Alignment(vertical="top", wrap_text=True)
+            kind = notes.iloc[r - 2]["kind"] if r >= 2 else "head"
+            if kind == "H":
+                a.font = Font(bold=True, size=13, color="14202A")
+                ws0.row_dimensions[r].height = 26
+            elif kind == "W":
+                a.font = Font(bold=True, color="9B3A2E")
+                b.font = Font(color="9B3A2E")
+                ws0.row_dimensions[r].height = 46
+            else:
+                a.font = Font(bold=True)
+                ws0.row_dimensions[r].height = 42
+        ws0.delete_cols(3)                       # hide the `kind` helper column
+        for c in ws0[1]:
+            c.font = head_font; c.fill = head_fill
+            c.alignment = Alignment(vertical="center")
+        ws0.row_dimensions[1].height = 24
 
         # --- sheet 1: the data ---
         ws = xl.sheets["User Data"]
