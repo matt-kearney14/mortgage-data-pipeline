@@ -613,3 +613,229 @@ characteristics are present and a reader counting columns finds them.
   audio time is "associated with that page."
 
 **Reversal cost:** Very low. Two columns; no other variable depends on them.
+
+---
+
+## DEC-U — `loan_application_data_partial.csv`: parsing, and implausible values nulled not clipped
+
+**Status:** Settled where measurable; the coverage gap is a question for the data owner.
+
+**Choice:** The extract is read with two date formats — `Application_Date` is
+`%m/%d/%Y`, the other three are Stata-style `%d%b%Y %H:%M:%S`. 39 trailing rows
+with a null `Loan_Number` are dropped. One `APR` of 1200.0 and seven
+`Credit_Score_Decision` values of 0 are set to NULL rather than clipped or kept.
+
+**Rationale:** Every date column parses at 100% under those formats, so nothing
+is lost to coercion. The implausible values are unambiguous — an APR of 1200%
+and a credit score of 0 are not measurements — and CLAUDE.md's hygiene rules
+say an unknown is NULL, never a substituted number. Clipping the APR to 30
+would invent a value; keeping 1200 would wreck any mean.
+
+**Evidence:**
+- All four date columns parse with zero unparseable values.
+- Milestone ordering holds: `LE_TIL_Sent <= Current_Status` on all 25,318 loans;
+  `Application <= LE_TIL_Sent` on 25,294, with 24 violations left as-is.
+- `Interest_Rate` is null on 53.0% and `Lock_Date` on 52.5%, and 12,986 loans are
+  null on both — a rate exists only once a loan is locked, so this is structural
+  missingness, not a defect.
+
+**Coverage, for the record:** the extract holds 25,318 of the 27,650 pilot loans
+(91.6%). The 2,332 missing split 1,243 / 541 / 548 across buckets 1 / 2 / 3, so
+they are not concentrated in one arm. 214 of our 10,140 clickstream users (2.1%)
+reach no loan in the extract.
+
+**Reversal cost:** Zero — re-run when a complete extract arrives.
+
+---
+
+## DEC-V — Loan-level variables come from the borrower's EARLIEST pilot loan
+
+**Status:** Provisional. Affects the 7.2% of borrowers holding several loans.
+
+**Choice:** A borrower's loans are ordered by `Application_Date` and the
+earliest is used for `loan_status`, the milestone timers, and every other
+loan-level column. `loans_in_pilot` reports how many they hold, so anyone can
+restrict to single-loan borrowers.
+
+**Rationale:** The clickstream is per person and cannot be split per loan — a
+borrower generates one browsing history regardless of how many applications
+they have. Some rule is required. The earliest application is the one whose
+disclosure journey the Talkuments invitation belongs to, and it is the only
+choice that does not depend on outcomes (picking "the originated one" would
+select on the dependent variable).
+
+**Evidence:** 1,577 borrowers (7.2%) hold more than one pilot loan; 1,180 of
+those have loans in more than one bucket. Those 1,180 are already excluded from
+bucket comparisons by `pilot_bucket_conflicting`.
+
+**Alternatives considered, rejected:**
+- Most recent loan — rejected; later applications are more likely to be
+  re-tries after a failure, which correlates with the outcome.
+- The loan matching the assigned bucket — rejected; circular for the 1,180
+  borrowers whose loans span buckets, which is exactly the group it would help.
+- Explode to loan grain — rejected; it would duplicate each borrower's
+  clickstream across their loans and inflate every behavioural measure.
+
+**Reversal cost:** Low. One `sort_values` and one `drop_duplicates`.
+
+---
+
+## DEC-W — The lender's `Coapplicant` flag supersedes counting applicant hashes
+
+**Status:** Settled. **Corrects an inference we reported.**
+
+**Choice:** Co-applicant status comes from the extract's `Coapplicant` field.
+Counting distinct `applicant_email_hash` values per loan is not used for this.
+
+**Rationale:** We previously inferred co-borrowers by counting distinct hashes
+per loan and reported that 24.0% of loans have two or more people, with 349
+having three or more. The lender's own flag does not agree:
+
+| | 1 hash | 2 hashes | 3+ hashes |
+|---|---|---|---|
+| `Coapplicant` = 0 | 16,818 | **1,601** | **155** |
+| `Coapplicant` = 1 | **2,303** | 4,259 | 180 |
+
+2,303 loans the lender flags as having a co-applicant show a single hash, and
+1,601 flagged as having none show two. So the hash count is not a reliable
+count of people on the loan — most likely because
+`talkument_loan_applicants.xlsx` lists only parties who were given a Talkuments
+identity, which is not the same set as the applicants on the mortgage.
+
+**Retraction.** The professor's scepticism about loans with three or more
+borrowers was well founded. Our "3+ people" figure is not evidence of
+multi-borrower lending; 155 such loans carry no co-applicant at all according to
+the lender. We also cited address incoherence as supporting evidence, which was
+itself unsound — city differs for the *same person on the same loan* in 77% of
+duplicate-row cases, so the address field cannot support that argument either.
+
+**What survives:** counting people and counting loans still give different
+activation rates, and that distinction is what reconciled our numbers against
+the paper's Table 2. The unit-of-analysis point stands; the co-borrower
+explanation for it does not.
+
+**Reversal cost:** Zero — `coapplicant` is a passthrough column.
+
+---
+
+## DEC-X — `LEDownload` / `CDDownload` are inferred from session context, and the id-ordering step was tested and rejected
+
+**Status:** Provisional and clearly labelled as inferred in the deliverable.
+
+**Choice:** Classify a `/Download/LoanDocument/{id}` event by the most recent
+Loan-Estimate-related or Closing-Disclosure-related pageview **within the same
+session**, then settle each document by majority vote across all its downloads
+and apply that one answer everywhere the document appears. Events with no
+context stay NULL. Every affected borrower carries
+`downloads_type_inferred`, and the codebook marks the columns INFERRED, NOT
+MEASURED.
+
+`LEDocument` and `CDDocument` are deliberately left NULL as the measured-only
+counterparts, so an inferred value and a factual one are never confused.
+
+**Rationale:** Spec §3 anticipates exactly this case and prescribes the
+session-bounded fallback, requiring a `download_type_inferred` flag. The
+inherited implementation used `shift(1)` instead, which classifies only 8.9% of
+downloads because the row immediately before a download is almost always
+`/translations/en` (7,942 times) or `/Dashboard` (4,003) rather than content.
+The document vote was added because a document has exactly one true type, so
+disagreement between occasions is the rule's own error made visible.
+
+**Evidence:**
+
+| step | events classified | self-consistency |
+|---|---|---|
+| inherited `shift(1)` | 1,741 (8.9%) | — |
+| session context | 13,291 (75.9%) | 87.0% |
+| **+ document vote** | **14,439 (82.5%)** | **100% by construction** |
+
+- 4,508 borrowers gain a value; 7,276 of 9,158 documents resolved; 177 tied and
+  left NULL.
+- **Independent corroboration:** using the `LE_TIL_Sent_Date` from the loan
+  extract, which played no part in building the rule, CD-labelled downloads land
+  a median 29.8 days after the Loan Estimate was sent and LE-labelled ones 17.7
+  days. Closing follows disclosure, which is the expected ordering.
+
+**Rejected after testing — id-ordering placement.** Document ids correlate 0.95
+with time, and among borrowers holding both a labelled LE and a labelled CD the
+LE id is lower 96.4% of the time. That ordering is real. But using it to
+*classify* an unlabelled document by proximity to a labelled one fails a holdout
+test: **62.6% accuracy against 50% chance**, with 1,009 of 2,154 LE documents
+misclassified. Ordering between two known types does not generalise to
+identifying an unknown one, and the step is not used. It would have added 1,683
+events — not worth a coin-flip.
+
+**Structural finding, reported rather than exploited:** in this data
+`LEDocument` is identical to `LEDownload` row-for-row, and `CDDocument` to
+`CDDownload`, because every borrower-document path is already a download — the
+only other downloads are generic samples (CFPB toolkit and similar) that belong
+to no borrower. The specification's four download variables therefore describe
+two distinct quantities here. Worth the professor knowing independently of the
+inference.
+
+**Alternatives considered, rejected:**
+- Timing alone (a download near `LE_TIL_Sent_Date` is an LE) — rejected;
+  downloads occur a median 25 days after the send date with quartiles at 12 and
+  38, far too broad to classify.
+- Keep everything NULL pending the lookup — rejected; the spec prescribes this
+  fallback, the flag makes it reversible, and 82.5% coverage on 4,508 borrowers
+  is real information.
+- Fill the unclassified 17.5% by any means — rejected; NULL is the honest value.
+
+**Reversal cost:** Zero. Filter on `downloads_type_inferred` to drop it entirely,
+or delete the four columns.
+
+---
+
+## DEC-Y — Exact replication of the paper's Table 2, and two errors it exposed in our own work
+
+**Status:** Settled. **This entry corrects two mistakes of ours.**
+
+**Choice:** Add `borrower_language` (the lender's loan-level language field) and
+`activated_talkument` (the lender's activation flag, with UNKNOWN preserved
+distinct from NO) to the user-level dataset, alongside the fields we already
+derived. Prefer `borrower_language` for loan-level work.
+
+**Rationale:** The paper's Table 2 is an external check on work we did
+independently, so reproducing it exactly is the strongest available evidence
+that our measures mean what we think. It now reproduces to two decimal places in
+**all twelve cells**:
+
+| | English-only | Bilingual | Any Aid |
+|---|---|---|---|
+| English | 53.70% | 54.43% | 54.07% |
+| Spanish | 62.95% | 71.79% | 67.47% |
+| Other | 50.70% | 50.50% | 50.60% |
+| Entire sample | 53.77% | 54.67% | 54.23% |
+
+Getting there required fixing two things we had wrong.
+
+**Error 1 — we scored unknown activation as "not activated."** 471 loans in the
+Talkuments buckets have a blank `Activated_Talkument`. Treating blank as "no"
+deflated every rate. Excluded properly, our borrower-level activation rate rises
+from the **46.8%** we reported to **48.0%**, and the loan-level figure lands
+exactly on the paper's 54.23%. This is the same silent-default failure as DEC-L,
+committed by us, in an analysis rather than the pipeline.
+
+**Error 2 — our "Other" language row was the wrong set of people.** We reported
+it 10-12 points above the paper. The paper counts loans with **no language
+recorded** under Other; we were dropping them. Folding them in, Other matches
+exactly at 50.60% on n=1,006. Our earlier "our Other groups are not the same set
+of people" was right about the cause and wrong to leave it there — it was
+resolvable.
+
+**Evidence:**
+- Language fields cross-validate at **99.72%** across 24,048 loans. The 68
+  disagreements are mostly loans where a co-applicant prefers Spanish but the
+  borrower does not, which is a definitional difference rather than an error.
+  Choosing between them moves the Spanish group by 22 loans against a base of
+  676 — a 4% swing in the group the study is about.
+- `at_least_one_activated` and `Activated_Talkument` agree 100%.
+- Our `first_login` measure agrees with the lender's activation field on all
+  16,953 loans where both exist, with zero disagreements.
+
+**A contribution back:** 471 loans carry no activation status from the lender,
+and 333 of the borrowers on them appear in our clickstream — they demonstrably
+used the software. Our data resolves gaps in theirs.
+
+**Reversal cost:** Zero. Both new columns are passthroughs.
