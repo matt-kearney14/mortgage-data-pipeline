@@ -41,6 +41,8 @@ SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the profes
 # as-is. Changing this string changes only the labels in the codebook and QA.
 TIMEZONE = "UTC"
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
+# DEC-Z: requested by the app on module page load; not a pageview (DEC-S evidence).
+TRANSLATION_RESOURCE = "/translations/en"
 # DEC-X / DEC-Z: download context from a page coded both LE- and CD-related.
 BOTH_LE_CD_CONTEXT = "LE"
 
@@ -134,6 +136,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--session-timeout", type=int, default=SESSION_TIMEOUT_MIN)
     ap.add_argument("--no-excel", action="store_true")
+    ap.add_argument("--keep-translation-resources", action="store_true",
+                    help="count /translations/en rows as pageviews and credit them "
+                         "dwell (pre-audit behaviour; see DEC-Z)")
     args = ap.parse_args()
     timeout_s = args.session_timeout * 60
 
@@ -141,10 +146,21 @@ def main() -> None:
 
     # DEC-P: /favicon.ico and /cart.json are browser asset requests. 4,548 of the
     # 4,675 sit between two real rows, truncating the preceding page's dwell.
-    # Dropped before sessionization so dwell flows page-to-page. The only rows
-    # removed anywhere in the pipeline.
-    dropped = int((ev.row_class == "non_pageview").sum())
-    ev = ev[ev.row_class != "non_pageview"]
+    # Dropped before sessionization so dwell flows page-to-page.
+    #
+    # DEC-Z (audit, 2026-10-01): /translations/en is the same kind of row. DEC-S
+    # established that the app requests it when a module page loads (bucket 2,
+    # which has no language toggle, emits it at the same rate as bucket 3), so it
+    # is not a page the borrower viewed. Left in, it takes the module's reading
+    # time: the module row is followed by /translations/en a median 1 s later, and
+    # the /translations/en row then carries the dwell — 291 hours, 8.9% of all
+    # observed time, credited to a row with no characteristics. Dropped here,
+    # exactly like the favicon, unless --keep-translation-resources.
+    resource = ev.row_class == "non_pageview"
+    if not args.keep_translation_resources:
+        resource |= ev.path == TRANSLATION_RESOURCE
+    dropped = int(resource.sum())
+    ev = ev[~resource]
 
     # Spec §1 sort key, enforced here rather than trusted from Phase 1: every
     # order-dependent step below (sessions, dwell, parent page, download context)
@@ -179,7 +195,10 @@ def main() -> None:
          "One row per user; unique.")
     u["webpages_visited"] = g.size()
     note("webpages_visited", "user", "Total pageviews. Excludes browser asset requests "
-         "(/favicon.ico, /cart.json).", "Exact.", "DEC-P")
+         "(/favicon.ico, /cart.json) and, unless --keep-translation-resources, the "
+         "/translations/en resource the app requests on module page load.",
+         "Exact. Not the raw row count of the log (spec var 28): those rows are not "
+         "pages the borrower viewed.", "DEC-P/DEC-Z")
     u["unique_webpages_visited"] = g.path.nunique()
     note("unique_webpages_visited", "user", "Distinct URL paths visited.", "Exact.")
     u["spanish_webpages_visited"] = g.Spanish_YN.sum()
@@ -894,7 +913,8 @@ def qa(ev, sess, u, dropped, args) -> None:
     L = ["# Phase 2 QA", "",
          f"Timeout {args.session_timeout} min · timezone {TIMEZONE} · "
          f"{len(u):,} users · {len(sess):,} sessions · {len(ev):,} pageviews", "",
-         f"{dropped:,} browser asset requests dropped before sessionization (DEC-P).", ""]
+         f"{dropped:,} non-pageview rows dropped before sessionization "
+         f"(browser assets, DEC-P{'' if args.keep_translation_resources else '; /translations/en page resources, DEC-Z'}).", ""]
 
     L += ["## 1. Session time reconciles with page dwell", "",
           "FAILS IF time_on_page is ever computed across a session boundary, or a "
