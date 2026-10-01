@@ -839,3 +839,71 @@ and 333 of the borrowers on them appear in our clickstream — they demonstrably
 used the software. Our data resolves gaps in theirs.
 
 **Reversal cost:** Zero. Both new columns are passthroughs.
+
+---
+
+## DEC-Z — Independent audit, 2026-10-01: `/translations/en` is not a pageview; `pages_C` counts a row's own flags; unknowns are not zeros
+
+**Status:** Provisional. Made by an independent audit of this repository, not by
+the agent that wrote the entries above. Every change is reversible by flag or by
+reverting one commit on branch `audit`; `backup/pre-audit-2026-09-30` holds the
+pre-audit state. Full report: `docs/AUDIT_REPORT_2026-10-01.md`.
+
+**Choice 1 — `/translations/en` is dropped before sessionization, like the
+favicon (DEC-P).** `--keep-translation-resources` restores the old behaviour.
+
+*Rationale.* DEC-S established from the data that the app requests
+`/translations/en` when a module page loads (bucket 2, which has no toggle, emits
+it at the same rate as bucket 3). DEC-S acted on this for the language state only.
+The row went on being counted as a pageview and credited dwell. Because it follows
+the module page a median 1 s later, it took the module's reading time: 291 hours,
+8.9% of all observed dwell, credited to a row with no characteristic flags. It
+made up 95% of all "unattributable" pageviews. This is the problem DEC-P names,
+"truncating the preceding page's dwell", at four times the favicon's scale.
+
+*Evidence.* Re-running with the row dropped: `time_LoanEstimateRelated` +272%,
+`time_CDRelated` +95%, `pages_unattributable` 19,581 → 359, total observed time
+−0.2%, sessions 34,436 → 34,403. The time was always measured. It had been
+credited to the wrong row.
+
+*Alternatives.* Keeping the row as a pageview but crediting its dwell to the
+preceding page would leave `webpages_visited` counting a request the borrower
+never made, so it was rejected. Treating `/translations/es` the same way was also
+rejected. It is a user action (the toggle), it is clean by the DEC-S evidence, and
+it has 292 rows.
+
+*Reversal cost.* Zero, because it is a CLI flag. With the flag set, every data file
+is identical to the pre-change output (verified).
+
+**Choice 2 — `pages_C` and `unknown_C` use the row's own flags.** Spec §5 var 32
+defines `pages_C = sum(flag)` over the user's rows. Only time (var 33) is
+re-attributed to the parent page. The code had applied the parent substitution to
+pages as well. As a result `pages_LoanTermsRelated` was 0 for every user: the only
+rows carrying that flag are audio clips, and the substitution erased all of them.
+Clips with no parent page in their session (40 rows) are now credited their own
+flags for time, as §5 prescribes. They had been sent to "unknown".
+
+**Choice 3 — two unknowns stop reading as zero/False.** `downloads_type_unknown`
+is added as the `unknown_` companion of `pages_LEDownload`/`pages_CDDownload`
+(964 users had read 0 LE downloads while holding untyped ones).
+`pilot_bucket_conflicting` is NULL, not False, for the 5 users linked to no pilot
+loan.
+
+**Recorded, not changed — the LE/CD download tie-break (DEC-X).** A page coded
+BOTH `LoanEstimateRelated` and `CDRelated` counts as LE context. Three paths carry
+both flags (`/Module/your-loan-estimate-made-clear`, `/Module/people-and-process`,
+a `-1` variant). They supply 7,157 of the 7,161 LE-labelled contexts. Strictly
+LE-only context supplies 4. "LE download" therefore means "the last LE/CD page was
+one of those modules". DEC-X describes the rule as "the most recent LE-related or
+CD-related pageview" and did not mention this. The tie-break is now a named
+constant, `BOTH_LE_CD_CONTEXT`. Its "87.0% self-consistency" reproduces exactly,
+but it measures agreement between repeat downloads, not accuracy. The independent
+signal is timing: downloads after a CD-only page land a median 3 days before the
+loan's status date, against 13 days for the BOTH-module group. That is some
+evidence the split carries meaning, and it is weak evidence for "LE". Whether
+these columns stay in the deliverable is a decision for the research team.
+
+**Noted for the log, not decided here.** DEC-N, DEC-O, DEC-P, DEC-Q and DEC-R are
+cited in code and in the codebook, but no entry for any of them exists in this
+file. Their rationale is in `docs/Phase2_Plan.md` §1 (D1–D5) and §4. Under
+CLAUDE.md's protocol each should have an entry here.

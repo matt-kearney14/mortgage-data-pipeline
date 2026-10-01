@@ -1,9 +1,25 @@
 # Phase 2 Plan — sessionization, aggregations, time attribution
 
-**Status:** Proposed, not implemented. CLAUDE.md requires plan mode for
-sessionization and time-per-characteristic attribution; this is that plan.
-**Prerequisite:** `output/phase1_url_features.parquet` (built, 20/20 checks pass).
-**Every number below is measured**, not estimated — see the Diagnostics section.
+**Status: IMPLEMENTED (2026-09-15 onward) — this is now a historical design
+record.** The implementation is `phase2_user_dataset.py`. The numbers below were
+measured on 2026-09-14, before implementation. Current figures are in
+`output/qa_phase2.md`, `output/session_timeout_sensitivity.csv` and the
+workbook's Read Me First sheet. Do not quote them from here.
+
+### How the implementation differs from this plan (audit, 2026-10-01)
+
+| plan | as built / as measured |
+|---|---|
+| D1 sensitivity table (34,447 sessions at 30 min) | The table is regenerated every run. With `/translations/en` dropped as a page resource (DEC-Z) there are 34,403 sessions at 30 min. 30 → 60 min still moves the session count by −4.9% and the mean duration by +44%. |
+| D3 drops only `/favicon.ico`, `/cart.json` | `/translations/en` is also dropped (DEC-Z). It is the same kind of row, and it carried 8.9% of all dwell. |
+| D4 "24,256 rows have all 13 flags NULL" | Most of those were `/translations/en` rows. After DEC-Z, 359 pageviews are unattributable. |
+| D5 "sum of time_* ≈ 3× total time" | Measured 1.41× before DEC-Z and 2.06× after. |
+| Step 4: "0 of 4,170 mp3 rows are a user's first row, so a parent always exists in principle" | The parent is **session**-bounded. 40 mp3 rows have no parent in their session, and they are credited their own flags as spec §5 requires. "2,468 preceded by another mp3" is measured on the raw log. After non-pageviews are dropped the figure is 2,603. |
+| Step 4: 18 `pages_{C}` "using the frozen names" | Until the audit, `pages_C` used the parent page's flags on mp3 rows, against spec var 32. Fixed (DEC-Z). |
+| Step 5: "five of six milestone timers stay blocked" | All six are built. `data/loan_application_data_partial.csv` supplies the dates (DEC-U, DEC-V). |
+| §4 creates DEC-N … DEC-R | These IDs are cited in code and in the codebook, but no DEC-N–R entry was ever written in `docs/DECISIONS.md`. Sections D1–D5 here remain their only rationale. |
+
+**Prerequisite:** `output/phase1_url_features.parquet`.
 
 ---
 

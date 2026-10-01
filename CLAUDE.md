@@ -2,13 +2,22 @@
 
 ## Source of truth
 
+**For facts, the data outranks everything.** The order of authority is: raw files
+in `data/` > what the code computes > what any document claims. If a document and
+the data disagree, the document is wrong and gets corrected. Never adjust a number,
+method or threshold to match a document. If the code and the data disagree, the
+code is wrong. Fix it and say so.
+
+Among the documents, for **definitions and intent**:
+
 | Rank | File | Role |
 |---|---|---|
-| 1 | `docs/Clickstream_Variable_Specification_v2.md` | Canonical variable definitions. Cite by section (§3, §7-B). |
-| 2 | `docs/Project_Brief.md` | Status, known defects, open decisions. |
-| 3 | `docs/DECISIONS.md` | Every provisional choice we have made. |
-| 4 | `README.md` | Rewritten 2026-09-14 and now accurate: how to run the pipeline, how to read the output safely, what is blocked. Still not a requirements document — the spec outranks it. |
-| — | `user_level_dataset.xlsx` → **Data Dictionary** sheet | Generated from code. Explains every output column and names the input each blocked column waits on. Never edit by hand; edit `note()` calls in `phase2_user_dataset.py`. |
+| 1 | `docs/Clickstream_Variable_Specification_v2.md` | Canonical variable definitions. Cite by section (§3, §7-B). Where the data contradicts it, an **AUDIT NOTE** in the spec says so; the data wins and the deviation is recorded in DECISIONS.md. |
+| 2 | `docs/Project_Brief.md` | Status, inputs, open decisions. |
+| 3 | `docs/DECISIONS.md` | Append-only log of every provisional choice, including reversed ones. Never edit or prune earlier entries; append. |
+| 4 | `README.md` | How to run the pipeline and read the output. Not a requirements document. |
+| — | `user_level_dataset.xlsx` → **Read Me First** and **Data Dictionary** sheets | Generated from code, and every figure in them is computed in the run. Never edit by hand; edit `build_notes()` / `note()` in `phase2_user_dataset.py`. |
+| — | `docs/AUDIT_REPORT_2026-10-01.md` | Independent audit of the state as of 2026-09-30, and what it changed. |
 
 Three incompatible numbering schemes exist (professor's sheet, v2 spec, repo README).
 **Always reference variables by name, never by number.** Say `Audio`, never "var 16"
@@ -40,7 +49,7 @@ These names are frozen. Use them in code, output, docs, and commit messages.
 | LEDownload | `LEDownload` | binary | OURS |
 | CDDownload | `CDDownload` | binary | OURS |
 | AudioMp3 | `AudioMp3` | binary | FIXED |
-| Audio | `Audio` | **integer count** | FIXED |
+| Audio | `Audio` | **integer count** per spec; 0/1 in practice (DEC-J) | FIXED |
 | Video | `Video` | binary | FIXED |
 | English (Y/N) | `English_YN` | binary | OURS |
 | Spanish (Y/N) | `Spanish_YN` | binary | OURS |
@@ -81,34 +90,47 @@ Milestone timers: `t_activation_to_last_access`, `t_application_to_activation`,
 
 ```
 data/                  gitignored research data — never commit, never modify sources
-  talkument_userinteractions.xlsx     event log, 337,581 rows
-  talkument_useraccount.xlsx
-  talkument_loan_applicants.xlsx
-  talkument_pilot_buckets.xlsx        unreferenced in spec — purpose TBD
+  talkument_userinteractions.xlsx     event log, 337,581 rows (sheet user_usage)
+  talkument_useraccount.xlsx          accounts: first_login, provided_language, ...
+  talkument_loan_applicants.xlsx      loannumber <-> user_hash bridge, language_preference
+  talkument_pilot_buckets.xlsx        loan_number -> bucket {1,2,3}; no user_hash
+  loan_application_data_partial.csv   loan extract: outcomes, the four milestone
+                                      dates, rate, APR, credit score, lender's
+                                      activation and language fields (25,318 loans)
 docs/
   Clickstream_Variable_Specification_v2.md
   Project_Brief.md
-  DECISIONS.md
+  DECISIONS.md                       append-only
+  Phase2_Plan.md                     historical: Phase 2 as proposed
+  AUDIT_REPORT_2026-10-01.md
   Clickstream_path_frequencies_and_coding_scheme.xlsx    tracked in git
-  Phase2_Plan.md       sessionization & attribution design
-diagnostics/           read-only analysis scripts
-  inventory.py             input inventory
-  coverage.py              dictionary coverage vs the event log
-  build_path_dictionary.py extends beta_coding to all 9,471 paths
-  output/              gitignored
+diagnostics/           read-only analysis scripts; output/ is gitignored
+  build_path_dictionary.py   PIPELINE STEP 1: extends beta_coding to all 9,471 paths
+  inventory.py               Phase 0 input inventory (predates the loan extract)
+  coverage.py                Phase 0 dictionary coverage vs the event log
+  audit_recompute.py         independent recomputation of the user-level table
+  crossvalidate.py           quantities measured two independent ways
+  replicate_activation_table.py   the paper's Table 2, three tabulations
+  treatment_effect_time.py   exploratory bucket 3 vs 2 comparison (not a finding)
 output/                pipeline outputs, gitignored
   path_dictionary_extended.csv   per-path flags + provenance  (pipeline INPUT)
+  dictionary_review_for_professor.xlsx   inferred + uncoded paths to confirm
   phase1_url_features.parquet    event grain + URL characteristics
-  phase2_events.parquet          + session_id, time_on_page
+  phase1_before_after.md         --compare: vs the inherited implementation
+  qa_phase1.md, qa_phase2.md     QA, reported as measured
+  phase2_events.parquet          + session_id, time_on_page, inferred download type
   phase2_sessions.parquet        one row per session
-  user_level_dataset.xlsx        THE DELIVERABLE — 2 sheets:
+  session_timeout_sensitivity.csv
+  user_level_dataset.xlsx        THE DELIVERABLE — 3 sheets:
+                                   'Read Me First' caveats, computed in the run
                                    'User Data' one row per user
                                    'Data Dictionary' every column explained
+  user_level_dataset.parquet     the same data
   codebook.csv                   the Data Dictionary sheet, machine-readable
-  variable_manifest.csv          provisional columns + decision ids
+  variable_manifest.csv          Phase 1 provisional columns + decision ids
   discrepancy_log.csv            paths with unresolved flags
 clickstream_processor.py    Phase 1 — URL-level characteristics
-phase2_user_dataset.py      Phase 2 — sessions, aggregates, user table
+phase2_user_dataset.py      Phase 2 — sessions, aggregates, loan join, user table
 ```
 
 Run order: `diagnostics/build_path_dictionary.py` → `clickstream_processor.py`
@@ -179,16 +201,19 @@ Known limits of `beta_coding`, all measured:
 
 ## Known ambiguities to surface, not guess
 
-**"Activation" is defined twice.** Spec §5 defines it as first Talkuments access;
-the brief says `talkument_useraccount.xlsx` contains activation data. Vars 37–41
-all depend on which is meant. If the account file has an activation date that
-differs from first pageview, report the discrepancy distribution and open a
-decision — do not pick one silently.
+**"Activation" is defined twice.** Spec §5 defines it as first Talkuments access
+(first pageview), and the pipeline uses that. `first_login` in
+`talkument_useraccount.xlsx` precedes the first pageview for all 10,008 users who
+have both, by a median of 2 seconds. A long tail runs to −9,750,114 s. The loan
+extract's `Activated_Talkument` is a third, loan-level measure. It agrees with
+`first_login` on every loan where both exist.
 
-**Timezone.** Before declaring one, check whether `eventdate` is tz-aware and what
-zone the milestone dates in `talkument_loan_applicants.xlsx` use. If they differ,
-the milestone arithmetic is wrong until reconciled. Declare the chosen zone in
-code as a named constant and in `DECISIONS.md`.
+**Timezone and date resolution.** `eventdate` is timezone-naive with second
+resolution. The four milestone dates in `loan_application_data_partial.csv` are
+calendar dates with no time of day. Every milestone timer therefore compares a
+timestamp with a midnight. When the two fall on the same day, the sign is
+undetermined (2,302 borrowers activated on their LE-sent day). `TIMEZONE = "UTC"`
+in `phase2_user_dataset.py` is a declaration, not a conversion (DEC-R).
 
 ---
 
@@ -216,16 +241,18 @@ professor's "try 60 minutes instead" is a rerun rather than an edit.
   `beta_coding`, output as `ProcessRelated_provisional`. Do not treat it as the
   union of Borrower and Lender. Do not inherit the old 48-path list.
 
-**Blocked on inputs we do not hold** — do not attempt workarounds, emit NULL:
+**Blocked on inputs we do not hold** (no workarounds; emit NULL):
 
-- **`LEDocument`, `CDDocument`, `LEDownload`, `CDDownload`** — every download
-  path is `/Download/LoanDocument/{numeric id}` with no type token. Needs an
-  id → document-type lookup (DEC-F).
-- **Five of six milestone timers** — `talkument_loan_applicants.xlsx` has no
-  milestone-date columns. `t_activation_to_last_access` is the exception and is
-  built (DEC-F).
-- **28 content paths across 6 uncoded topics** — routed to the professor in
-  `output/dictionary_review_for_professor.xlsx`.
+- **`LEDocument`, `CDDocument`.** Every download path is
+  `/Download/LoanDocument/{numeric id}` with no type token, so these need an
+  id → document-type lookup (DEC-F). `LEDownload`/`CDDownload` are *inferred* from
+  session context under spec §3's fallback (DEC-X). That inference is labelled
+  INFERRED everywhere and its limits are in DEC-Z.
+- **28 content paths across 6 uncoded topics.** These are routed to the professor
+  in `output/dictionary_review_for_professor.xlsx`.
+
+The milestone timers are **not** blocked. All five come from
+`loan_application_data_partial.csv` (DEC-U, DEC-V).
 
 Everything else may be decided under the protocol above.
 
@@ -238,17 +265,24 @@ webpages_visited` passes trivially while English is computed as the complement o
 Spanish — it is not evidence of correctness. When writing a validation, state in a
 comment what would make it fail.
 
-Validate the language state machine against `provided_language` instead:
-compare each user's modal computed language to their account language and report
-the mismatch count **within each language group**. Pooled, the population is
-98.7% English and the check cannot fail. Measured at the spec's switching rule:
-en 0.02%, es 11.48% — and the Spanish figure is a behavioural finding, not a
-defect, since all of it is users who explicitly requested `/translations/en`.
+Validate the language state machine against `provided_language` instead.
+Compare each user's modal computed language with their account language, and
+report the mismatch count **within each language group**. Pooled, the population is
+98.7% English and the check cannot fail. The current figures are in
+`output/qa_phase1.md` §1. The 11.48% Spanish mismatch measured earlier under the
+spec-literal switching rule turned out to be a defect, not a behavioural finding.
+`/translations/en` is emitted on page load (DEC-S).
 
-**`provided_language` is not a pre-treatment covariate.** It reads `es` for 280
-users in pilot bucket 3 and 0 in bucket 2, so it encodes the treatment bucket, not
-the borrower. Use `language_preference` from `talkument_loan_applicants.xlsx`
-for that — it is balanced across buckets (2.68% / 2.74% / 2.80% Spanish).
+**`provided_language` is not a pre-treatment covariate.** In the user-level file it
+reads `es` for 171 users in bucket 3 and 0 in bucket 2 (282 `es` accounts in the
+whole account file). It encodes the treatment bucket, not the borrower. Use
+`language_preference` from `talkument_loan_applicants.xlsx` instead. The share of
+loans with a Spanish-preference applicant is 2.59% / 2.76% / 2.82% across buckets
+1 / 2 / 3.
+
+**Do not type a measured number into a document or a generated sheet.** Compute it
+in the run, or cite the output file that computes it. The 2026-10-01 audit found
+more than a dozen hand-typed figures that were wrong for the file they described.
 
 Diagnostics stay honest regardless of how reasonable the surrounding decisions
 were. Coverage rates, missingness rates, and QA results are reported as measured.

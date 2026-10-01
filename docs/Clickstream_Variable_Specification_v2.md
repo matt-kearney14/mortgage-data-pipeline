@@ -4,6 +4,27 @@
 **Source of truth for variable definitions:** professor-supplied variable list.
 **Source of truth for URL classification:** `Clickstream_path_frequencies_and_coding_scheme.xlsx`, sheets `coding_dictionary` and `beta_coding`.
 
+> **AUDIT NOTICE, 2026-10-01.** This specification ranks first among the documents
+> for *definitions*. Several of its *factual* statements are contradicted by the
+> data. The text below is left exactly as written. Each conflict is marked
+> **⚠ AUDIT NOTE** where a reader will meet it, and the data governs (CLAUDE.md,
+> Source of truth). Summary:
+>
+> 1. §3 vars 18–19: `/translations/en` is not a user's language switch. The app
+>    emits it on module page load (DEC-S). It is not a pageview either (DEC-Z).
+> 2. §2 var 16: no input supplies a count of audio links. `Audio` is 0/1 in the
+>    only per-path source (DEC-J).
+> 3. §1 inputs: `coding_dictionary` has no per-path rows and cannot drive any flag.
+>    `beta_coding` does (DEC-C). The milestone table is keyed by **loan**, not by
+>    user, and its dates carry no time of day.
+> 4. §5 var 39: the spec orders "Activation → LE_TIL_Sent_Date". In the data the LE
+>    is sent on an earlier calendar day than activation for 76.6% of borrowers, so
+>    the variable is mostly negative.
+> 5. §3 vars 13–14 / §7-B: download URLs are type-opaque, so the primary
+>    definition cannot be used. Under the fallback, the coding scheme marks the main
+>    LE module as BOTH LE- and CD-related, which makes "most recent LE-related or
+>    CD-related page" ambiguous for most downloads (DEC-X, DEC-Z).
+
 ---
 
 ## 0. How to read this document
@@ -32,6 +53,13 @@ Numbering below is **canonical and frozen**. It follows the order of the profess
 | Loan milestone table | `Application_Date`, `LE_TIL_Sent_Date`, `Lock_Date`, `Current_Status_Date` | Keyed by user. Drives vars 38–42. |
 | Activated-language field | Per-user language at account activation | Needed for vars 18–19. See §7-D if unavailable. |
 | Document ID → type map | Document ID → {LE, CD} | Needed for vars 10–11 **if** download URLs are ID-based. See §7-B. |
+
+> **⚠ AUDIT NOTE 2026-10-01.** As measured: the event log has 337,581 rows.
+> `coding_dictionary` is a 45-row glossary with no path column, so the per-path
+> source is `beta_coding` (103 path keys, 100 seen in the log; DEC-C). The milestone
+> dates come from `data/loan_application_data_partial.csv`, keyed by **loan
+> number** and reached through `talkument_loan_applicants.xlsx`. They are calendar
+> dates without a time of day. No Document ID → type map exists in any input.
 
 ### Output grain
 
@@ -82,6 +110,11 @@ These flags are **not mutually exclusive**. A single URL routinely fires many at
 | 21 | `Goal_to_Advise` | binary | Webpage goal is to give advice. |
 
 > **Correction to inherited doc — var 16.** `Audio` was previously implemented as a binary flag firing on every mp3 path. The professor's spec defines it as *"Number of audio file (mp3) links on the webpage"* — a **count**, describing how many audio links a page offers. `AudioMp3` (var 15) is the binary "this row is an mp3." Var 34 confirms the distinction: audio clips clicked is the sum of `AudioMp3`, not of `Audio`. Building `Audio` as a flag destroys the difference between a page with one audio link and a page with twelve.
+
+> **⚠ AUDIT NOTE 2026-10-01.** The data cannot supply this count. `beta_coding`
+> codes `Audio` strictly 0/1, and the event log does not record page HTML. `Audio`
+> is therefore emitted as an integer-typed column holding 0/1 (DEC-J). Any analysis
+> treating it as a count is wrong.
 
 ### Validation pass (required)
 
@@ -138,6 +171,15 @@ Algorithm (per user, in sort order):
   3. Forward-fill: rows between switches inherit the prevailing state.
 ```
 
+> **⚠ AUDIT NOTE 2026-10-01 — this algorithm is contradicted by the data.**
+> `/translations/en` is emitted by the application when a module page loads. It
+> occurs at the same rate in pilot bucket 2, which has no language toggle (9,085
+> events), as in bucket 3 (9,114). Applying step 2 literally flips Spanish users
+> back to English on page loads they did not request. The pipeline switches on
+> `/translations/es` only by default (DEC-S; `--lang-en-switch always` restores
+> this text). It also excludes `/translations/en` rows from pageview counts and
+> dwell (DEC-Z).
+
 Properties: the two are **mutually exclusive and exhaustive**, so `var29 + var30 == var28` exactly. This is a hard QA check (§8).
 
 > **Correction to inherited doc — vars 18/19.** Previously, all baseline dictionary paths were defaulted to English and Spanish was a substring match on `/translations/es`. That misclassifies every page a Spanish-language user views whose path does not itself carry `/es` — likely the large majority of their session — and breaks the reconciliation above.
@@ -192,6 +234,11 @@ A single-pageview session has duration `0`, not `NULL`. Report the count of thes
 | # | Variable | Definition |
 |---|---|---|
 | 28 | `Webpages visited` | Total row count for the user. |
+
+> **⚠ AUDIT NOTE 2026-10-01.** `webpages_visited` is not the raw row count. It
+> excludes browser asset requests (`/favicon.ico`, `/cart.json`; DEC-P) and the
+> `/translations/en` page resource (DEC-Z), because those rows are not pages the
+> borrower viewed and each one takes the preceding page's dwell.
 | 29 | `Spanish webpages visited` | `sum(Spanish)`. |
 | 30 | `English webpages visited` | `sum(English)`. |
 | 31 | `Unique webpages visited` | Count of distinct `url_path`. |
@@ -239,6 +286,13 @@ All are **signed durations**. Emit `NULL`, not `0`, when the milestone date is m
 | 40 | `LE_TIL_Sent_Date → first LE visit` | `min(timestamp where LoanEstimateRelated==1 AND timestamp >= LE_TIL_Sent_Date) - LE_TIL_Sent_Date`. |
 | 41 | `Activation → Lock_Date` | `Lock_Date - first pageview timestamp`. |
 | 42 | `Last access → Current_Status_Date` | `Current_Status_Date - last pageview timestamp`. |
+
+> **⚠ AUDIT NOTE 2026-10-01.** All four milestone dates are calendar dates
+> (midnight), while pageview timestamps have seconds. A same-day pair therefore
+> reads as up to a day apart with an undetermined sign. For var 39, 2,302 of 9,926
+> borrowers (23.2%) activated on their LE-sent day. The LE came first by calendar day
+> for 76.6%, so var 39 is negative for most borrowers, against the order this table
+> implies.
 
 > **Correction to inherited doc — var 40.** The inherited definition used the first LE-related visit outright. Users who browsed LE content *before* their LE was issued would produce negative elapsed times. The visit must be constrained to occur on or after `LE_TIL_Sent_Date`. Users with LE-related activity only before the send date get `NULL`, and their count should be reported — it is itself an interesting behavioral finding.
 
