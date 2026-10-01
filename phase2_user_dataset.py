@@ -250,24 +250,30 @@ def main() -> None:
          "11.7% of all rows population-wide. Exclude these before any dwell analysis.", "DEC-O")
 
     # ----------------------------------------- per-characteristic expansion
-    # Audio dwell is credited to the PARENT page's characteristics, never
-    # additionally to the clip's own flags — attributing both would double count
-    # (spec §5 var 33).
+    # pages_C (spec §5 var 32) is sum(flag) over the user's OWN rows: an mp3 row
+    # counts under the clip's own flags. time_C (var 33) credits an mp3 row's dwell
+    # to its PARENT page's characteristics instead, never additionally to the
+    # clip's own — attributing both would double count. An mp3 with no parent in
+    # its session (the session opens on audio) is credited its own flags, as §5
+    # prescribes, and counted in QA. AUDIT 2026-10-01: previously pages_C and
+    # unknown_C also used the parent's flags, contradicting var 32 and the
+    # codebook, and orphan mp3 dwell was sent to "unknown" instead of own flags.
     attr = ev[["user_hash", "time_on_page"]].copy()
     is_mp3 = ev.AudioMp3 == 1
+    orphan_mp3 = is_mp3 & parent.isna()
     for c in CHARACTERISTICS:
         own = ev[c]
         par = ev[c].reindex(parent).reset_index(drop=True)
         par.index = ev.index
-        attr[c] = own.where(~is_mp3, par)
+        attr[c] = own.where(~is_mp3 | orphan_mp3, par)
 
     for c in CHARACTERISTICS:
         short = c.replace("_provisional", "")
-        flag = attr[c]
-        u[f"pages_{short}"] = ev.assign(_f=(flag == 1)).groupby("user_hash")._f.sum()
+        own, flag = ev[c], attr[c]
+        u[f"pages_{short}"] = ev.assign(_f=(own == 1)).groupby("user_hash")._f.sum()
         u[f"time_{short}"] = (attr.assign(_t=attr.time_on_page.where(flag == 1))
                                   .groupby("user_hash")._t.sum())
-        u[f"unknown_{short}"] = ev.assign(_u=flag.isna()).groupby("user_hash")._u.sum()
+        u[f"unknown_{short}"] = ev.assign(_u=own.isna()).groupby("user_hash")._u.sum()
         extra = ("  This characteristic is flagged '????' in the professor's own coding "
                  "sheet and is unresolved; it is output under a _provisional name."
                  if short == "ProcessRelated" else "")
@@ -301,10 +307,12 @@ def main() -> None:
          "to the characteristics of the page that played the clip, per spec §5 var 33.",
          "DEC-T")
 
-    # what no characteristic can account for
-    unknown_all = attr[CHARACTERISTICS].isna().all(axis=1)
-    u["pages_unattributable"] = ev.assign(_x=unknown_all).groupby("user_hash")._x.sum()
-    u["time_unattributable"] = (attr.assign(_t=attr.time_on_page.where(unknown_all))
+    # what no characteristic can account for: pages on the row's own flags (as
+    # pages_C), time on the attributed flags (as time_C)
+    u["pages_unattributable"] = (ev.assign(_x=ev[CHARACTERISTICS].isna().all(axis=1))
+                                   .groupby("user_hash")._x.sum())
+    unknown_attr = attr[CHARACTERISTICS].isna().all(axis=1)
+    u["time_unattributable"] = (attr.assign(_t=attr.time_on_page.where(unknown_attr))
                                     .groupby("user_hash")._t.sum())
     u["pct_pages_classified"] = (1 - u.pages_unattributable / u.webpages_visited).round(4)
     note("pages_unattributable", "user", "Pageviews with no characteristic determined at all.",
