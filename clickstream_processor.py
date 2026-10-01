@@ -420,8 +420,12 @@ def write_manifest(df: pd.DataFrame) -> pd.DataFrame:
     add("English_YN", "OURS", True, "DEC-I/DEC-K", "stateful; seeded from provided_language")
     add("Spanish_YN", "OURS", True, "DEC-I/DEC-K", "stateful; seeded from provided_language")
     for c in BLOCKED_ON_DOCUMENT_TYPE:
-        add(c, "FIXED" if c.endswith("Document") else "OURS", True, "DEC-F",
-            "BLOCKED: no LoanDocument-id -> document-type lookup exists")
+        if c.endswith("Document"):
+            add(c, "FIXED", True, "DEC-F",
+                "BLOCKED: no LoanDocument-id -> document-type lookup exists")
+        else:
+            add(c, "OURS", True, "DEC-F/DEC-X",
+                "NULL at this grain; INFERRED from session context in phase2_user_dataset.py")
     m = pd.DataFrame(rows)
     m.to_csv(OUT / "variable_manifest.csv", index=False)
     return m
