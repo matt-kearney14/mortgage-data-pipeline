@@ -466,7 +466,8 @@ def main() -> None:
                   .rename("unresolved_flags"))
     disc = (df.groupby([URL_COL, "row_class"]).size().rename("events").reset_index()
               .join(per_path, on=URL_COL))
-    disc = disc[disc.unresolved_flags > 0].sort_values("events", ascending=False)
+    disc = disc[disc.unresolved_flags > 0].sort_values(
+        ["events", URL_COL], ascending=[False, True], kind="mergesort")   # deterministic ties
     disc["pct_of_log"] = (disc.events / len(df)).round(5)
     disc.to_csv(OUT / "discrepancy_log.csv", index=False)
     unres = df[df[flag_cols].isna().any(axis=1)]

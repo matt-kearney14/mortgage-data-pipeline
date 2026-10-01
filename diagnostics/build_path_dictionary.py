@@ -48,7 +48,11 @@ NON_PAGEVIEW = {'/favicon.ico','/cart.json'}
 # ---------------------------------------------------------------- load
 ev = pd.read_excel(EVENTS, sheet_name="user_usage")
 ev["path"] = ev["path"].astype(str)
+# Ties in event count are broken by path so the row order of every output is
+# reproducible across machines (value_counts leaves tie order undefined).
 vc = ev["path"].value_counts()
+vc = vc.rename_axis("path").reset_index(name="n").sort_values(
+    ["n", "path"], ascending=[False, True], kind="mergesort").set_index("path")["n"]
 N = len(ev)
 
 beta = pd.read_excel(CODING, sheet_name="beta_coding")
@@ -260,7 +264,7 @@ w("shares their topic**. Ranked by event volume — this is the whole list, and 
 w("top few closes most of the remaining gap.")
 w()
 orphan = d[(d.row_class == "content_page") & (d.n_unresolved_topic_flags > 0)] \
-           .sort_values("events", ascending=False)
+           .sort_values(["events", "path"], ascending=[False, True], kind="mergesort")
 w("| events | % of log | path | topic | unresolved flags |")
 w("|---|---|---|---|---|")
 for _, r in orphan.iterrows():
@@ -295,9 +299,11 @@ with pd.ExcelWriter(OUT / "dictionary_review_for_professor.xlsx", engine="openpy
     loo_df.reset_index().to_excel(xl, sheet_name="Rule_validation", index=False)
     cols = ["path","events","row_class","format","topic","inference_source"] + \
            [c for f in FLAGS for c in (f, f+"__prov")]
-    inf_pages = inf[inf.row_class != "audio_clip"][cols].sort_values("events", ascending=False)
+    inf_pages = inf[inf.row_class != "audio_clip"][cols].sort_values(
+        ["events", "path"], ascending=[False, True], kind="mergesort")
     inf_pages.to_excel(xl, sheet_name="Inferred_pages", index=False)
-    inf[inf.row_class == "audio_clip"][cols].sort_values("events", ascending=False) \
+    inf[inf.row_class == "audio_clip"][cols].sort_values(
+        ["events", "path"], ascending=[False, True], kind="mergesort") \
         .to_excel(xl, sheet_name="Inferred_audio", index=False)
     orphan[cols].to_excel(xl, sheet_name="Needs_coding", index=False)
 
