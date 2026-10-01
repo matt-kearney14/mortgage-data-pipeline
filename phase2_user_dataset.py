@@ -41,6 +41,8 @@ SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the profes
 # as-is. Changing this string changes only the labels in the codebook and QA.
 TIMEZONE = "UTC"
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
+DL_STATS: dict = {}            # filled by infer_download_type(), quoted in the codebook
+FACTS: dict = {}               # figures computed during the run, quoted in Read Me First
 # DEC-Z: requested by the app on module page load; not a pageview (DEC-S evidence).
 TRANSLATION_RESOURCE = "/translations/en"
 # DEC-X / DEC-Z: download context from a page coded both LE- and CD-related.
@@ -143,6 +145,7 @@ def main() -> None:
     timeout_s = args.session_timeout * 60
 
     ev = pd.read_parquet(OUT / "phase1_url_features.parquet")
+    n_events = len(ev)
 
     # DEC-P: /favicon.ico and /cart.json are browser asset requests. 4,548 of the
     # 4,675 sit between two real rows, truncating the preceding page's dwell.
@@ -169,6 +172,24 @@ def main() -> None:
             .reset_index(drop=True))
 
     ev = sessionize(ev, timeout_s)
+
+    # timeout sensitivity, regenerated every run so the figure is never quoted alone
+    rows = []
+    for t in SENSITIVITY_GRID:
+        e2 = sessionize(ev[["user_hash", "eventdate"]].copy(), t * 60)
+        d = e2.groupby(["user_hash", "session_id"]).eventdate.agg(
+            lambda s: (s.max() - s.min()).total_seconds())
+        p = e2.groupby(["user_hash", "session_id"]).size()
+        rows.append(dict(timeout_min=t, sessions=int(e2.session_start.sum()),
+                         median_duration_s=float(d.median()), mean_duration_s=round(float(d.mean()), 1),
+                         median_pages=float(p.median()), mean_pages=round(float(p.mean()), 2),
+                         pct_single_page=round(100 * float((p == 1).mean()), 1)))
+    sens = pd.DataFrame(rows).set_index("timeout_min", drop=False)
+    t2 = min(SENSITIVITY_GRID, key=lambda t: abs(t - 2 * args.session_timeout))
+    base = sens.loc[args.session_timeout] if args.session_timeout in sens.index else None
+    dbl = (None if base is None else
+           (100 * (sens.loc[t2, "sessions"] / base.sessions - 1),
+            100 * (sens.loc[t2, "mean_duration_s"] / base.mean_duration_s - 1)))
     ev = infer_download_type(ev)          # DEC-X
     parent = parent_page_index(ev)
 
@@ -206,7 +227,8 @@ def main() -> None:
     for c in ("spanish_webpages_visited", "english_webpages_visited"):
         note(c, "user", "Pageviews in that language, from the per-user language state "
              "machine seeded by the account's provided_language.",
-             "Exhaustive: the two always sum to webpages_visited. Caveat for the ~114 "
+             "Exhaustive: the two always sum to webpages_visited. Caveat for the "
+             f"{int(ev.path.str.startswith('/translations/es').groupby(ev.user_hash).any().sum()):,} "
              "borrowers who used the toggle — a switch back to English cannot be "
              "distinguished from the app's own page-load request, so Spanish exposure "
              "may be slightly overstated for them. Measured headroom is about 40 events "
@@ -219,7 +241,7 @@ def main() -> None:
          f"bucketed in {TIMEZONE}.", "eventdate is timezone-naive at second resolution.", "DEC-R")
 
     # Switches TO Spanish are measured cleanly: /translations/es occurs 292 times
-    # in arm 3 and zero times in arm 2, so it carries no page-load noise at all
+    # in bucket 3 and zero times in bucket 2, so it carries no page-load noise at all
     # (DEC-S). The reverse switch is not separable from noise and is not counted.
     u["language_switches_to_spanish"] = (
         ev.assign(_s=ev.path.str.startswith("/translations/es"))
@@ -238,7 +260,9 @@ def main() -> None:
     u["num_sessions"] = g.session_id.nunique()
     note("num_sessions", "user", f"Distinct sessions at a {args.session_timeout}-minute "
          "inactivity timeout.",
-         "Robust to the timeout: 30->60 min changes this by about -5%.", "DEC-N")
+         ("" if dbl is None else f"Robust to the timeout: {args.session_timeout}->{t2} min "
+          f"changes the session count by {dbl[0]:+.1f}%. ") +
+         "See session_timeout_sensitivity.csv.", "DEC-N")
 
     su = sess.groupby("user_hash")
     u["total_session_time"] = su.session_duration.sum()
@@ -247,8 +271,9 @@ def main() -> None:
     note("total_session_time", "user", "Sum of session durations, seconds.",
          "Sensitive to the timeout.", "DEC-N")
     note("mean_session_duration", "user", "Mean session duration, seconds.",
-         "HIGHLY timeout-sensitive: 30->60 min moves the population mean by +44%. "
-         "Report the median alongside it.", "DEC-N")
+         ("HIGHLY timeout-sensitive" + ("" if dbl is None else
+          f": {args.session_timeout}->{t2} min moves the population mean by {dbl[1]:+.0f}%")) +
+         ". Report the median alongside it.", "DEC-N")
     note("median_session_duration", "user", "Median session duration, seconds.",
          "Preferred over the mean; session durations are heavily right-skewed.", "DEC-N")
     u["mean_pages_in_session"] = su.pages_in_session.mean().round(2)
@@ -268,7 +293,8 @@ def main() -> None:
          "Equals total_session_time by construction; QA check 1 verifies this.")
     note("zero_dwell_pages", "user", "Pageviews with a measured dwell of exactly 0 "
          "seconds, mostly redirects and language toggles.",
-         "11.7% of all rows population-wide. Exclude these before any dwell analysis.", "DEC-O")
+         f"{ev.zero_dwell.mean():.1%} of all pageviews population-wide. Exclude these "
+         "before any dwell analysis.", "DEC-O")
 
     # ----------------------------------------- per-characteristic expansion
     # pages_C (spec §5 var 32) is sum(flag) over the user's OWN rows: an mp3 row
@@ -288,6 +314,14 @@ def main() -> None:
         par.index = ev.index
         attr[c] = own.where(~is_mp3 | orphan_mp3, par)
 
+    FACTS["orphan_mp3"] = int(orphan_mp3.sum())
+    lt = ev.LoanTermsRelated == 1
+    FACTS["lt_expected"] = float(ev.time_on_page.where(lt & (~is_mp3 | orphan_mp3)).sum())
+    FACTS["lt_leak"] = float(ev.time_on_page.where(lt).sum())
+    FACTS["proc_not_superset"] = int((((ev.BorrowerMortgageProcessRelated == 1)
+                                       | (ev.LenderMortgageProcessRelated == 1))
+                                      & (ev.ProcessRelated_provisional != 1)).sum())
+
     for c in CHARACTERISTICS:
         short = c.replace("_provisional", "")
         own, flag = ev[c], attr[c]
@@ -300,10 +334,14 @@ def main() -> None:
                  if short == "ProcessRelated" else "")
         note(f"pages_{short}", "user", f"Pageviews where {short} == 1.{extra}",
              "Counts confirmed 1s only. Read together with unknown_" + short + ".", "DEC-Q")
+        lt = (" STRUCTURALLY NEAR-ZERO: no page carries LoanTermsRelated (blank on every "
+              "coded page row), only audio clips, and clip time goes to the parent page."
+              if short == "LoanTermsRelated" else "")
         note(f"time_{short}", "user", f"Seconds spent on pages where {short} == 1. "
              "Audio-clip time is credited to the page that played the clip.",
-             "The time_* columns OVERLAP — a page can carry several "
-             "characteristics, so they do not sum to total time.", "DEC-Q")
+             "Observed dwell only: a page that ends its session adds 0, not its unknown "
+             "duration. The time_* columns OVERLAP — a page can carry several "
+             "characteristics, so they do not sum to total time." + lt, "DEC-Q")
         note(f"unknown_{short}", "user", f"Pageviews where {short} could not be "
              "determined (path not classified).",
              "The denominator caveat for pages_/time_" + short + ".", "DEC-L")
@@ -375,7 +413,9 @@ def main() -> None:
         note(c, "user", MILESTONE_DEFS[c],
              "Signed seconds; negative values are real and must not be clipped. "
              "Computed from the user's EARLIEST pilot loan by application date "
-             "(DEC-V); see loans_in_pilot for users holding several.", "DEC-V")
+             "(DEC-V); see loans_in_pilot for users holding several. The loan dates are "
+             "calendar dates (midnight) while Talkuments times have seconds, so a "
+             "same-day pair reads as up to a day apart and its sign can be wrong.", "DEC-V")
     DOC_DEFS = {
         "LEDocument": "the page is a downloaded Loan Estimate document",
         "CDDocument": "the page is a downloaded Closing Disclosure document",
@@ -387,14 +427,20 @@ def main() -> None:
                     "service's metadata. Every download path in the log is "
                     "/Download/LoanDocument/{numeric id} and carries no type token, "
                     "so the type cannot be recovered from the URL.")
+    D = DL_STATS
     INFERRED_CAVEAT = (
         "INFERRED, NOT MEASURED. The download URL carries no document type, so the "
         "type is taken from the last Loan Estimate or Closing Disclosure page the "
         "borrower viewed in the same session, then settled per document by majority "
-        "vote. Covers 82.5% of download events; the rest are NULL, not guessed. "
-        "Validated at 87.0% self-consistency, and Closing Disclosure downloads land "
-        "a median 12 days later than Loan Estimate ones, as they should. Set "
-        "downloads_type_inferred to 0 to exclude these entirely.")
+        f"vote. Covers {D['typed']/D['events']:.1%} of download events; the rest are "
+        "NULL (see downloads_type_unknown). CAUTION: a page coded as BOTH LE- and "
+        f"CD-related counts as LE; that tie-break supplies {D['both_context']:,} of the "
+        f"{D['le_context']:,} LE-labelled contexts, so 'LE' here effectively means 'the "
+        "last LE/CD page was /Module/your-loan-estimate-made-clear or "
+        f"/Module/people-and-process' (DEC-Z). Of {D['multi_docs']:,} documents seen on "
+        f"several occasions, {D['all_agree']:.1%} get the same label every time — a "
+        "consistency check, not an accuracy check. Set downloads_type_inferred to 0 "
+        "to exclude these entirely.")
     for c in DOCUMENT_CHARACTERISTICS:
         if c in ("LEDownload", "CDDownload"):
             flag = (ev[c].fillna(False)).astype(bool)
@@ -442,9 +488,6 @@ def main() -> None:
     u["provided_language"] = acct.provided_language.reindex(u.index)
     u["expertise_level"] = acct.expertise_level.reindex(u.index)
     u["account_enabled"] = acct.account_enabled.reindex(u.index)
-    note("provided_language", "account", "Account language setting.",
-         "NOT a pre-treatment covariate: it reads 'es' for 280 users in pilot bucket 3 "
-         "and 0 in bucket 2, so it reflects the treatment, not the borrower.")
     note("expertise_level", "account", "Account expertise level.",
          "Use with caution. There is no level 3, and levels 2 and 4 appear only among "
          "users with events, so this may be assigned on engagement rather than at signup.")
@@ -464,22 +507,35 @@ def main() -> None:
     u["pilot_bucket_conflicting"] = gb.bucket.nunique().gt(1).reindex(u.index).astype("boolean")
     u["language_preference"] = gb.language_preference.agg(single_or_null).reindex(u.index)
     u["state"] = gb.state.agg(single_or_null).reindex(u.index)
+    FACTS["b1_users"] = int(gb.bucket.agg(lambda b: (b == 1).any()).reindex(u.index)
+                            .fillna(False).sum())
+    b1 = (f"Bucket 1 (no Talkument) is never a resolved value here: {FACTS['b1_users']:,} "
+          "users in this file do hold a bucket-1 loan, but every one of them also holds a "
+          "bucket 2 or 3 loan, so they are pilot_bucket_conflicting. Compare bucket 1 on "
+          "loan outcomes, not on this dataset.")
     note("pilot_bucket_label", "loan", "Plain-language name of the pilot bucket.",
-         "Sort or filter on this, or on pilot_bucket. Bucket 1 never appears: those "
-         "borrowers had no Talkument access, so they generate no clickstream and have "
-         "no row in this table. Compare bucket 1 on loan outcomes, not on this dataset.")
-    note("pilot_bucket", "loan", "Pilot arm number, bridged loan_number to loannumber.",
-         "NULL where a user holds loans in different buckets. Bucket 1 never appears: those "
-         "borrowers had no Talkument access and so generate no clickstream.")
+         "Sort or filter on this, or on pilot_bucket. " + b1)
+    note("pilot_bucket", "loan", "Pilot bucket number, bridged loan_number to loannumber.",
+         "NULL where a user holds loans in different buckets or none. " + b1)
     note("pilot_bucket_conflicting", "loan", "True if the user's loans span more than one bucket.",
          f"{int(u.pilot_bucket_conflicting.sum()):,} users; excluded from pilot_bucket rather "
          "than assigned a guess. NULL for users linked to no pilot loan at all.")
     note("language_preference", "loan", "Applicant's stated language preference.",
-         "Pre-treatment and balanced across buckets; the appropriate language covariate.")
+         "Pre-treatment and balanced across buckets (see Read Me First); the appropriate "
+         "per-person language covariate. NULL where a user's applicant rows disagree.")
     note("state", "loan", "Applicant state.", "NULL where a user's loans disagree.")
+    pl_es = u.provided_language.eq("es")
+    FACTS["es_b3"] = int((pl_es & u.pilot_bucket.eq(3)).sum())
+    FACTS["es_b2"] = int((pl_es & u.pilot_bucket.eq(2)).sum())
+    note("provided_language", "account", "Account language setting.",
+         f"NOT a pre-treatment covariate: in this file it reads 'es' for {FACTS['es_b3']:,} "
+         f"users in pilot bucket 3 and {FACTS['es_b2']:,} in bucket 2, so it reflects the "
+         "treatment, not the borrower.")
 
     # ------------------------------------------- loan outcomes & milestones
     u = attach_loan_data(u, ev, loans, appl)
+    pilot_facts(appl, buck, loans)
+    FACTS["n_events"] = n_events
 
     u = u.reset_index()
 
@@ -517,20 +573,7 @@ def main() -> None:
     cb = cb.sort_values(["_blocked", "_sheet_pos"]).drop(columns=["_blocked", "_sheet_pos"])
     cb.to_csv(OUT / "codebook.csv", index=False)
 
-    # timeout sensitivity, regenerated every run so the figure is never quoted alone
-    rows = []
-    for t in SENSITIVITY_GRID:
-        e2 = sessionize(ev.drop(columns=[c for c in ev.columns
-                                         if c.startswith("session") or c in
-                                         ("time_on_page", "zero_dwell")]).copy(), t * 60)
-        d = e2.groupby(["user_hash", "session_id"]).eventdate.agg(
-            lambda s: (s.max() - s.min()).total_seconds())
-        p = e2.groupby(["user_hash", "session_id"]).size()
-        rows.append(dict(timeout_min=t, sessions=int(e2.session_start.sum()),
-                         median_duration_s=float(d.median()), mean_duration_s=round(float(d.mean()), 1),
-                         median_pages=float(p.median()), mean_pages=round(float(p.mean()), 2),
-                         pct_single_page=round(100 * float((p == 1).mean()), 1)))
-    pd.DataFrame(rows).to_csv(OUT / "session_timeout_sensitivity.csv", index=False)
+    sens.to_csv(OUT / "session_timeout_sensitivity.csv", index=False)
 
     if not args.no_excel:
         write_workbook(u, cb)
@@ -577,6 +620,9 @@ def infer_download_type(ev: pd.DataFrame) -> pd.DataFrame:
     # the last qualifying page BEFORE this row, bounded by the session
     prior = (ctx.groupby([ev.user_hash, ev.session_id]).shift(1)
                 .groupby([ev.user_hash, ev.session_id]).ffill())
+    kind = pd.Series(np.where(both, "BOTH", ctx), index=ev.index).where(ctx.notna())
+    prior_kind = (kind.groupby([ev.user_hash, ev.session_id]).shift(1)
+                      .groupby([ev.user_hash, ev.session_id]).ffill())
 
     doc_id = ev.path.str.extract(r"/(\d+)$")[0]
     seen = pd.DataFrame({"doc_id": doc_id[is_doc], "guess": prior[is_doc]}).dropna()
@@ -593,6 +639,20 @@ def infer_download_type(ev: pd.DataFrame) -> pd.DataFrame:
     ev["LEDownload"] = pd.array(np.where(typ.isna(), pd.NA, typ == "LE"), dtype="boolean")
     ev["CDDownload"] = pd.array(np.where(typ.isna(), pd.NA, typ == "CD"), dtype="boolean")
     ev["download_type_inferred"] = pd.array(np.where(typ.notna(), True, pd.NA), dtype="boolean")
+
+    # Reported, not used: every figure the codebook quotes about this inference.
+    n_doc = int(is_doc.sum())
+    occ = seen.groupby("doc_id").guess
+    multi = occ.size() >= 2
+    DL_STATS.update(
+        events=n_doc,
+        context=int(len(seen)),
+        typed=int(typ.notna().sum()),
+        both_context=int((prior_kind[is_doc] == "BOTH").sum()),
+        le_context=int((seen.guess == "LE").sum()),
+        multi_docs=int(multi.sum()),
+        all_agree=float(occ.nunique()[multi].eq(1).mean()) if multi.any() else float("nan"),
+    )
     return ev
 
 
@@ -612,6 +672,8 @@ def load_loans():
     for col, fmt in DATE_COLS.items():
         d[col] = pd.to_datetime(d[col], format=fmt, errors="coerce")
     # DEC-U: implausible values are nulled, not clipped, and counted in QA.
+    FACTS["apr_nulled"] = int((d.APR > 30).sum())
+    FACTS["score_nulled"] = int((d.Credit_Score_Decision < 300).sum())
     d.loc[d.APR > 30, "APR"] = np.nan
     d.loc[d.Credit_Score_Decision < 300, "Credit_Score_Decision"] = np.nan
     return d
@@ -621,8 +683,8 @@ def attach_loan_data(u, ev, loans, appl):
     """Loan outcomes and spec vars 38-42, attributed to one loan per borrower.
 
     DEC-V: a borrower's loans are ordered by Application_Date and the EARLIEST
-    is used. 7.2% of borrowers hold more than one, and `loans_in_pilot` exposes
-    that so anyone can exclude them.
+    is used; `loans_in_pilot` exposes borrowers holding several so anyone can
+    exclude them. Ties on the earliest date keep applicant-file order.
     """
     link = appl.dropna(subset=["user_hash"])[["user_hash", "loannumber"]].copy()
     link["loannumber"] = link.loannumber.astype(str)
@@ -634,10 +696,17 @@ def attach_loan_data(u, ev, loans, appl):
     counts = m.groupby("user_hash").loannumber.nunique()
 
     u["loans_in_pilot"] = counts.reindex(u.index).astype("Int64")
+    FACTS["multi_loan"] = float((u.loans_in_pilot > 1).sum() / u.loans_in_pilot.notna().sum())
+    FACTS["no_loan"] = int(u.loans_in_pilot.isna().sum())
+    first_dates = m.groupby("user_hash").Application_Date.apply(lambda d: int((d == d.min()).sum()))
+    FACTS["tied_earliest"] = int((first_dates.reindex(u.index) > 1).sum())
     note("loans_in_pilot", "user", "Number of the borrower's loans present in the "
          "loan-application extract.",
-         "Greater than 1 for about 7% of borrowers. All loan-level columns below "
-         "describe only the EARLIEST of them by application date.", "DEC-V")
+         f"Greater than 1 for {FACTS['multi_loan']:.1%} of borrowers with a loan; NULL for "
+         f"the {FACTS['no_loan']:,} who reach no loan in the extract. All loan-level columns "
+         "below describe only the EARLIEST loan by application date "
+         f"({FACTS['tied_earliest']:,} borrowers have two loans on that earliest date; "
+         "applicant-file order breaks the tie).", "DEC-V")
 
     # DEC-Y: the lender's own loan-level language field. It reproduces the paper's
     # Table 2 exactly, so it is the field to use for loan-level work; the applicant
@@ -648,25 +717,35 @@ def attach_loan_data(u, ev, loans, appl):
     u["borrower_language"] = blp.map(lambda v: LANG.get(v, None if pd.isna(v) else "Other"))
     note("borrower_language", "loan",
          "The lender's language preference for the loan's borrower.",
-         "PREFER THIS for loan-level work: it reproduces the paper's Table 2 exactly, "
-         "to two decimals in all 12 cells. It agrees with the applicant file's "
-         "language_preference on 99.72% of loans; the 68 disagreements are mostly "
-         "loans where a co-applicant prefers Spanish but the borrower does not. Blank "
-         "where no language was recorded — the paper counts those under 'Other'.",
+         "PREFER THIS for loan-level work: tabulated with the lender's activation field "
+         "it reproduces the paper's Table 2 to two decimals in all 12 cells "
+         "(diagnostics/replicate_activation_table.py, which also measures its agreement "
+         "with the applicant file's language_preference). Blank where no language was "
+         "recorded — the paper counts those under 'Other'.",
          "DEC-Y")
 
     # DEC-Y: activation status, with UNKNOWN kept distinct from NO.
     at = primary.Activated_Talkument.reindex(u.index)
     u["activated_talkument"] = pd.array(
         np.where(at.isna(), pd.NA, at.eq("Yes")), dtype="boolean")
+    has_loan = u.loans_in_pilot.notna()
+    FACTS["act_blank_with_loan"] = int((u.activated_talkument.isna() & has_loan).sum())
+    FACTS["act_no"] = int(u.activated_talkument.eq(False).sum())
     note("activated_talkument", "loan",
          "Whether anyone on the loan activated Talkuments, per the lender.",
-         "BLANK means unknown, NOT 'no' — scoring blanks as 'no' understates activation "
-         "by about 1.2 points across the pilot. Agrees with our own first_login measure "
-         "on all 16,953 loans where both exist, with zero disagreements. NOTE: every "
-         "borrower in this file demonstrably used the software, so the 333 blanks here "
-         "are gaps in the lender's field that our clickstream resolves, not "
-         "non-activations.", "DEC-Y")
+         "BLANK means unknown, NOT 'no'. Every borrower in this file used the software, "
+         f"so the column holds no 'no' ({FACTS['act_no']:,}) and its blanks are of two "
+         f"kinds: {FACTS['act_blank_with_loan']:,} borrowers whose loan has no lender "
+         f"value, and {FACTS['no_loan']:,} who reach no loan at all. The lender field "
+         "agrees with talkument_useraccount first_login on every loan where both exist "
+         "(diagnostics/crossvalidate.py).", "DEC-Y")
+
+    nh = (appl.assign(loannumber=appl.loannumber.astype(str))
+              .groupby("loannumber").applicant_email_hash.nunique())
+    lh = loans.set_index("loannumber").Coapplicant
+    nh = nh.reindex(lh.index)
+    FACTS["co1_single"] = int(((lh == 1) & (nh == 1)).sum())
+    FACTS["co0_multi"] = int(((lh == 0) & (nh >= 2)).sum())
 
     STATUS = {"loan_status": "Loan_Status", "hmda_loan_type": "HMDA_Loan_Type",
               "hmda_loan_purpose": "HMDA_Loan_Purpose"}
@@ -688,15 +767,20 @@ def attach_loan_data(u, ev, loans, appl):
     note("hmda_loan_purpose", "loan",
          "HMDA purpose: Home Purchase, Cash-out refinancing, Refinancing, Home Improvement.", "")
     note("coapplicant", "loan", "Lender's co-applicant flag for the loan.",
-         "Does NOT agree with counting distinct applicant hashes in "
-         "talkument_loan_applicants.xlsx — 2,303 loans flagged 1 show a single hash "
-         "and 1,601 flagged 0 show two. Prefer this field; see DEC-W.", "DEC-W")
+         "Does NOT agree with counting distinct applicant_email_hash values in "
+         "talkument_loan_applicants.xlsx — "
+         f"{FACTS['co1_single']:,} loans flagged 1 show a single hash and "
+         f"{FACTS['co0_multi']:,} flagged 0 show two or more. Prefer this field; see "
+         "DEC-W.", "DEC-W")
     note("credit_score", "loan", "Credit score used for the decision.",
-         "7 loans carried a 0 and were nulled rather than clipped (DEC-U).", "DEC-U")
+         f"{FACTS['score_nulled']:,} loans carried a score below 300 and were nulled rather "
+         "than clipped (DEC-U).", "DEC-U")
     note("interest_rate", "loan", "Note rate.",
-         "Null for 53% of loans — a rate exists only once the loan is locked.", "DEC-U")
+         f"Null for {loans.Interest_Rate.isna().mean():.0%} of loans in the extract — a "
+         "rate exists only once the loan is locked.", "DEC-U")
     note("apr", "loan", "Annual percentage rate.",
-         "One loan carried 1200.0 and was nulled rather than clipped (DEC-U).", "DEC-U")
+         f"{FACTS['apr_nulled']:,} loan(s) carried an APR above 30 and were nulled rather "
+         "than clipped (DEC-U).", "DEC-U")
 
     # ---- spec vars 38-42 -------------------------------------------------
     first = u["first_access"]; last = u["last_access"]
@@ -720,102 +804,152 @@ def attach_loan_data(u, ev, loans, appl):
     le_map = le_ev.merge(le.rename("le_sent"), left_on="user_hash", right_index=True, how="inner")
     after = le_map[le_map.eventdate >= le_map.le_sent]
     first_after = after.groupby("user_hash").eventdate.min()
+    FACTS["le_only_before"] = int(len(set(le_map.dropna(subset=["le_sent"]).user_hash)
+                                      - set(first_after.index)))
+    # Milestone dates are DATES (midnight); first_access has seconds. A borrower who
+    # first opens Talkuments on the day the LE was sent reads negative regardless
+    # of the true order, so that sign is undetermined for them.
+    FACTS["le_same_day"] = int((le.notna() & (first.dt.normalize() == le)).sum())
+    FACTS["le_before_day"] = int((first.dt.normalize() > le).sum())
+    FACTS["le_after_day"] = int((first.dt.normalize() < le).sum())
     u["t_le_sent_to_first_le_visit"] = secs(first_after.reindex(u.index), le)
     return u
 
 
+def pilot_facts(appl, buck, loans) -> None:
+    """Pilot-wide figures the Read Me quotes. Loan grain; computed every run."""
+    b = buck.assign(loan_number=buck.loan_number.astype(str))
+    in_ext = b.loan_number.isin(set(loans.loannumber))
+    FACTS["pilot_loans"] = len(b)
+    FACTS["extract_loans"] = int(in_ext.sum())
+    FACTS["missing_by_bucket"] = {int(k): (int((~in_ext & (b.bucket == k)).sum()),
+                                           float((~in_ext[b.bucket == k]).mean()))
+                                  for k in sorted(b.bucket.unique())}
+    FACTS["orig_all"] = float(loans.Loan_Status.eq("Loan Originated").mean())
+    tk = loans.bucket.isin(["talkument", "talkument_multi"])
+    FACTS["act_blank_loans"] = int((tk & loans.Activated_Talkument.isna()).sum())
+    a = appl.assign(loannumber=appl.loannumber.astype(str))
+    es = (a.groupby("loannumber").language_preference
+            .apply(lambda v: v.isin(["Spanish", "Espa?ol"]).any()))
+    eb = b.set_index("loan_number").bucket
+    FACTS["es_share_by_bucket"] = {int(k): float(es.reindex(eb.index[eb == k]).dropna().mean())
+                                   for k in sorted(eb.unique())}
+
+
 def build_notes(u) -> pd.DataFrame:
     """The 'Read Me First' sheet. The professor reads the workbook, not the repo,
-    so every caveat that could change a conclusion has to live here."""
+    so every caveat that could change a conclusion has to live here. Every figure
+    is computed in this run (FACTS); none is typed in by hand."""
+    F = FACTS
     R = []
     def H(t): R.append(("", t, "H"))
     def N(k, v): R.append((k, v, "N"))
     def W(k, v): R.append((k, v, "W"))
+
+    tot = float(u.total_time_observed.sum())
+    overlap = sum(float(u[f"time_{c.replace('_provisional', '')}"].sum())
+                  for c in CHARACTERISTICS) / tot
+    d = DL_STATS
+    sp = u[u.pilot_bucket.isin([2, 3]) & u.pilot_bucket_conflicting.eq(False)
+           & u.language_preference.isin(["Spanish", "Espa?ol"])]
+    spb = sp.pilot_bucket.value_counts()
+    mb = F["missing_by_bucket"]
+    neg = u.t_activation_to_le_sent.dropna()
+    nle = F["le_same_day"] + F["le_before_day"] + F["le_after_day"]
 
     H("What this file is")
     N("Grain", f"ONE ROW PER BORROWER who opened Talkuments — {len(u):,} people, "
                f"{u.shape[1]} columns. It is NOT one row per loan.")
     N("Sheets", "'User Data' is the data. 'Data Dictionary' defines every column, "
                 "says how to read it, and names what any empty column is waiting on.")
-    N("Source", "Talkument clickstream (337,581 events), the borrower account file, "
-                "the pilot bucket assignment, and the loan application extract.")
+    N("Source", f"Talkument clickstream ({F['n_events']:,} logged events, of which "
+                f"{int(u.webpages_visited.sum()):,} are pageviews — browser asset requests "
+                "and the app's /translations/en page resource are not), the borrower "
+                "account file, the pilot bucket assignment, and the loan application extract.")
 
     H("Five things to check before you analyse")
     W("1. Person vs loan",
       "This file is per person; activation tables in the paper are per loan. A loan can "
       "have several applicants and a person can hold several loans, so the two give "
-      "different rates — we reconciled 46.3% (per person) against 54.23% (per loan). "
-      "Aggregate to the loan before comparing against loan-level tables.")
+      "different rates. Aggregate to the loan before comparing against loan-level tables "
+      "(diagnostics/replicate_activation_table.py does both).")
     W("2. Do not sum the time_ columns",
       "A page can carry several characteristics, so time_ columns overlap by design and "
-      "total about 1.4x real time. Use total_time_observed as the denominator, never the "
-      "sum of the parts. Same applies to the pages_ columns.")
+      f"total {overlap:.2f}x real time. Use total_time_observed as the denominator, never "
+      "the sum of the parts. Same applies to the pages_ columns.")
     W("3. pages_X counts only confirmed cases",
       "Each pages_X has a matching unknown_X giving the pageviews where that "
-      "characteristic could not be determined. A low count can mean 'did not read it' OR "
-      "'we could not classify it'. pct_pages_classified gives the overall picture; the "
-      "median borrower is 95.8% classified.")
+      "characteristic could not be determined (for the download types, "
+      "downloads_type_unknown). A low count can mean 'did not read it' OR 'we could not "
+      "classify it'. pct_pages_classified gives the overall picture; the median borrower "
+      f"is {u.pct_pages_classified.median():.1%} classified. time_X counts OBSERVED dwell "
+      "only: the last page of every session has no measurable duration and adds 0.")
     W("4a. Which language field to use",
       "THREE exist and they are not interchangeable. borrower_language is the lender's "
-      "loan-level field and reproduces the paper's Table 2 exactly — use it for "
-      "loan-level work. language_preference is per applicant, from the applicant file, "
-      "and marks a loan Spanish if ANY applicant does; it agrees 99.72% of the time. "
-      "provided_language is the Talkuments account setting and is NOT a covariate at all:")
+      "loan-level field — use it for loan-level work. language_preference is per "
+      "applicant, from the applicant file. provided_language is the Talkuments account "
+      "setting and is NOT a covariate at all:")
     W("4b. provided_language is NOT a covariate",
-      "It reads 'es' for 280 borrowers in bucket 3 and 0 in bucket 2, because only bucket "
-      "3 offered Spanish. It encodes the treatment, not the borrower. Use "
-      "language_preference from the applicant file, which is pre-treatment and balanced "
-      "across buckets (2.68% / 2.74% / 2.80% Spanish).")
+      f"In this file it reads 'es' for {F['es_b3']:,} borrowers in bucket 3 and "
+      f"{F['es_b2']:,} in bucket 2, because only bucket 3 offered Spanish. It encodes the "
+      "treatment, not the borrower. Use language_preference, which is pre-treatment: "
+      "loans with a Spanish-preference applicant are " +
+      " / ".join(f"{v:.2%}" for v in F["es_share_by_bucket"].values()) +
+      " of buckets " + " / ".join(str(k) for k in F["es_share_by_bucket"]) + ".")
     W("5. Two columns are inferred, not measured",
       "pages_LEDownload, pages_CDDownload and their time_ counterparts. Download URLs "
       "carry no document type, so the type comes from the last Loan Estimate or Closing "
-      "Disclosure page viewed in the same session. 82.5% of downloads covered, 87.0% "
-      "self-consistent. downloads_type_inferred says how many of a borrower's downloads "
-      "this applies to — set it to 0 to exclude them.")
+      f"Disclosure page viewed in the same session. {d['typed']/d['events']:.1%} of "
+      f"downloads typed. CAUTION: {d['both_context']:,} of the {d['le_context']:,} "
+      "LE-labelled contexts are pages the coding scheme marks as BOTH LE- and CD-related, "
+      "counted as LE by rule — 'LE' is far weaker evidence than 'CD'. "
+      "downloads_type_inferred says how many of a borrower's downloads this applies to.")
 
     H("Findings that affect interpretation")
     W("Origination looks high here",
       f"{100*u.loan_originated.mean():.1f}% of borrowers in this file originated, against "
-      "about 47% across all pilot loans. That is selection, NOT a treatment effect: "
-      "activating Talkuments and progressing through a loan are both downstream of "
-      "staying engaged. Bucket 1 borrowers never had access and do not appear here at all.")
-    W("The Loan Estimate precedes activation",
-      "t_activation_to_le_sent is negative for 99.8% of borrowers — the LE is sent BEFORE "
-      "the borrower first opens Talkuments, presumably triggering the invitation. The "
-      "specification defines this variable in the opposite order, so its sign reads "
-      "backwards. Negative durations throughout this file are real and have not been clipped.")
-    W("Fewer than half ever logged in — and blank is not 'no'",
-      "48.0% of borrowers given Talkuments logged in, once the 517 whose status is "
-      "UNKNOWN are excluded rather than scored as 'no'. Counting blanks as 'no' gives "
-      "46.8% and understates by 1.2 points — the same trap that made our first Table 2 "
-      "replication miss by 2 points. Our measure agrees with the lender's activation "
-      "field on all 16,953 loans where both exist, with zero disagreements.")
+      f"{100*F['orig_all']:.1f}% across all loans in the extract. That is selection, NOT a "
+      "treatment effect: activating Talkuments and progressing through a loan are both "
+      "downstream of staying engaged.")
+    W("The Loan Estimate usually precedes activation — but only to the day",
+      f"t_activation_to_le_sent is negative for {(neg < 0).mean():.1%} of borrowers. The "
+      "LE date has no time of day, so that overstates it: by calendar day the LE came "
+      f"first for {F['le_before_day']:,} of {nle:,} borrowers "
+      f"({F['le_before_day']/nle:.1%}), on the same day for {F['le_same_day']:,} "
+      f"({F['le_same_day']/nle:.1%}, order unknowable), and after for "
+      f"{F['le_after_day']:,}. The specification defines this variable in the opposite "
+      "order, so its sign reads backwards. Negative durations are real and not clipped.")
+    W("Blank activation is not 'no'",
+      "activated_talkument is the lender's field. Blank means unknown. In this file it is "
+      f"blank for {F['act_blank_with_loan']:,} borrowers whose loan has no lender value and "
+      f"for the {F['no_loan']:,} who reach no loan at all; it is never 'no', because "
+      "everyone here used the software. Across the pilot's Talkuments buckets "
+      f"{F['act_blank_loans']:,} loans have no lender value.")
     N("Multi-loan borrowers",
-      "7.2% hold more than one pilot loan and all loan-level columns describe their "
-      "EARLIEST by application date. loans_in_pilot flags them. 1,180 borrowers hold "
+      f"{F['multi_loan']:.1%} of borrowers with a loan hold more than one in the extract, "
+      "and all loan-level columns describe their EARLIEST by application date. "
+      f"loans_in_pilot flags them. {int(u.pilot_bucket_conflicting.sum()):,} borrowers hold "
       "loans in different buckets and are excluded from bucket comparisons "
       "(pilot_bucket_conflicting).")
     N("Spanish is a small group",
-      "Spanish-preference borrowers are 2.58% of the pilot. After excluding those with "
-      "loans in several buckets, 312 remain for language comparisons — 142 in bucket 2 "
-      "and 170 in bucket 3. Adequate for large effects only.")
-
-    N("Our data can fill a gap in theirs",
-      "333 borrowers in this file have no activation status recorded by the lender, yet "
-      "they demonstrably used the software — they generated clickstream. Across the "
-      "whole pilot the lender has 471 loans with unknown activation. The clickstream "
-      "resolves them.")
+      f"After excluding conflicting buckets, {len(sp):,} Spanish-preference borrowers "
+      f"remain for language comparisons — {int(spb.get(2, 0)):,} in bucket 2 and "
+      f"{int(spb.get(3, 0)):,} in bucket 3. Adequate for large effects only.")
 
     H("Still missing")
     N("Document type lookup",
       "A table mapping LoanDocument id to document type would replace the inferred "
       "download columns with measured ones, and fill pages_LEDocument / pages_CDDocument, "
-      "the only columns still entirely empty. Note these two would be identical to the "
+      "the only columns still entirely empty. These two would be identical to the "
       "LEDownload / CDDownload pair in this data, since every borrower document path is "
       "already a download.")
-    N("Coverage of the loan extract",
-      "It covers 25,318 of 27,650 pilot loans (91.6%). The 2,332 missing are spread "
-      "evenly across buckets, so no bucket is favoured. 214 borrowers here reach no loan.")
+    W("Coverage of the loan extract — NOT even across buckets",
+      f"It covers {F['extract_loans']:,} of {F['pilot_loans']:,} pilot loans "
+      f"({F['extract_loans']/F['pilot_loans']:.1%}). The missing loans are " +
+      ", ".join(f"{n:,} ({r:.1%}) of bucket {k}" for k, (n, r) in mb.items()) +
+      ". Bucket 1 is missing at more than twice the rate of buckets 2 and 3, so any "
+      "bucket-1-vs-treatment comparison of loan outcomes rests on a less complete "
+      f"control group. {F['no_loan']:,} borrowers here reach no loan.")
 
     return pd.DataFrame(R, columns=["Topic", "Detail", "kind"])
 
@@ -944,20 +1078,18 @@ def qa(ev, sess, u, dropped, args) -> None:
                != u.webpages_visited).sum())
     L += [f"- users failing: **{bad:,}** ({'PASS' if bad == 0 else 'FAIL'})", ""]
 
-    L += ["## 4. Audio time is credited once, not twice", "",
-          "FAILS IF an mp3 row's dwell reached both its own characteristics and its "
-          "parent page's. Total attributed time for any single characteristic cannot "
-          "exceed total observed time.", ""]
+    L += ["## 4. Audio time is credited to the parent page, not the clip", "",
+          "FAILS IF an mp3 row with a parent page had its dwell credited to its own flags. "
+          "LoanTermsRelated is the probe: no page carries it, only audio clips do, so "
+          "time_LoanTermsRelated must equal exactly the dwell of orphan mp3 rows (no parent "
+          "in their session) that carry it.", ""]
     tot = float(u.total_time_observed.sum())
-    worst, wc = 0.0, ""
-    for c in CHARACTERISTICS:
-        s = c.replace("_provisional", "")
-        v = float(u[f"time_{s}"].sum())
-        if v > worst:
-            worst, wc = v, s
-    L += [f"- total observed time: {tot:,.0f} s",
-          f"- largest single characteristic (`{wc}`): {worst:,.0f} s "
-          f"({worst/tot:.1%}) ({'PASS' if worst <= tot else 'FAIL'})", ""]
+    probe = float(u.time_LoanTermsRelated.sum())
+    L += [f"- time_LoanTermsRelated {probe:,.0f} s; expected {FACTS['lt_expected']:,.0f} s; "
+          f"would be {FACTS['lt_leak']:,.0f} s if clip flags leaked "
+          f"({'PASS' if probe == FACTS['lt_expected'] else 'FAIL'})",
+          f"- mp3 rows with no parent page in their session: {FACTS['orphan_mp3']:,} "
+          "(credited their own flags, spec §5; spec §8 diagnostic 16)", ""]
 
     L += ["## 5. The time_* columns overlap and must not be summed", "",
           "Not a pass/fail check — a property analysts need to know. A page carrying "
@@ -996,7 +1128,7 @@ def qa(ev, sess, u, dropped, args) -> None:
              f"({'PASS' if orphan == 0 else 'FAIL'})")
     L.append(f"- users with no loan match at all: {int(u.loan_status.isna().sum()):,} "
              f"({u.loan_status.isna().mean():.1%}) — the extract is partial, "
-             "covering 25,318 of 27,650 pilot loans")
+             f"covering {FACTS['extract_loans']:,} of {FACTS['pilot_loans']:,} pilot loans")
     L.append("")
     L += ["### Outcome distribution", "", "| status | users | share |", "|---|---|---|"]
     vc = u.loan_status.value_counts()
@@ -1008,6 +1140,47 @@ def qa(ev, sess, u, dropped, args) -> None:
              "activating and progressing through the loan are both downstream of "
              "staying engaged. This is not a treatment effect.")
     L.append("")
+
+    L += ["## 8. Specification §8 hard identities", "",
+          "Each FAILS on the stated condition; numbers are users (or rows) violating it.", ""]
+    ps = sess.groupby("user_hash").pages_in_session.sum().reindex(u.user_hash.values).values
+    starts = ev.groupby("user_hash").session_start.sum().reindex(u.user_hash.values).values
+    gs = ev.groupby(["user_hash", "session_id"])
+    pages18 = [c for c in u.columns if c.startswith("pages_") and c != "pages_unattributable"]
+    checks = [
+        ("2. unique_webpages_visited <= webpages_visited",
+         int((u.unique_webpages_visited > u.webpages_visited).sum())),
+        ("3. sum(pages_in_session) == webpages_visited", int((ps != u.webpages_visited).sum())),
+        ("5. num_sessions == rows with session_start == 1", int((starts != u.num_sessions).sum())),
+        ("6. audio_clips_clicked == sum(AudioMp3) <= webpages_visited",
+         int(((u.audio_clips_clicked != u.pages_AudioMp3)
+              | (u.audio_clips_clicked > u.webpages_visited)).sum())),
+        (f"7. pages_C <= webpages_visited for all {len(pages18)} pages_ columns",
+         int(sum((u[c].fillna(0) > u.webpages_visited).sum() for c in pages18))),
+        ("8. every session has exactly one start and one end (sessions)",
+         int(((gs.session_start.sum() != 1) | (gs.session_end.sum() != 1)).sum())),
+        ("9. no negative time_on_page / session_duration / inter_session_elapsed / "
+         "t_activation_to_last_access (rows+users)",
+         int((ev.time_on_page < 0).sum() + (sess.session_duration < 0).sum()
+             + (sess.inter_session_elapsed < 0).sum()
+             + (u.t_activation_to_last_access < 0).sum())),
+        ("10. t_le_sent_to_first_le_visit >= 0", int((u.t_le_sent_to_first_le_visit < 0).sum())),
+    ]
+    L += ["| identity | violations | |", "|---|---|---|"]
+    L += [f"| {k} | {v:,} | {'PASS' if v == 0 else 'FAIL'} |" for k, v in checks]
+    L += ["", "Diagnostics (spec §8, report don't fail):", "",
+          f"- 15. single-pageview sessions: {int((sess.pages_in_session == 1).sum()):,} "
+          f"({(sess.pages_in_session == 1).mean():.1%})",
+          f"- 16. mp3 rows with no in-session parent: {FACTS['orphan_mp3']:,}",
+          f"- 17. borrower-document downloads typed by the fallback: "
+          f"{DL_STATS['typed']:,} of {DL_STATS['events']:,} "
+          f"({DL_STATS['typed']/DL_STATS['events']:.1%}); {DL_STATS['both_context']:,} of the "
+          f"{DL_STATS['le_context']:,} LE contexts come from pages coded BOTH LE and CD",
+          f"- 18. ProcessRelated a superset of Borrower ∪ Lender? rows with Borrower or "
+          f"Lender = 1 but ProcessRelated != 1: {FACTS['proc_not_superset']:,} "
+          "(expected to fail, spec §7-E)",
+          f"- var 40: users whose LE-related activity all predates the LE send date "
+          f"(NULL by design): {FACTS['le_only_before']:,}", ""]
 
     (OUT / "qa_phase2.md").write_text("\n".join(L))
 
