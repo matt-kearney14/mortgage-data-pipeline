@@ -41,6 +41,8 @@ SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the profes
 # as-is. Changing this string changes only the labels in the codebook and QA.
 TIMEZONE = "UTC"
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
+# DEC-X / DEC-Z: download context from a page coded both LE- and CD-related.
+BOTH_LE_CD_CONTEXT = "LE"
 
 # Pilot buckets. CONFIRMED 2026-09-29 against data/loan_application_data_partial.csv,
 # which names them directly: bucket 1 = "no talkument", 2 = "talkument",
@@ -402,6 +404,19 @@ def main() -> None:
          "Use this to exclude inferred values: pages_LEDownload and pages_CDDownload "
          "are built entirely from these events.", "DEC-X")
 
+    # AUDIT 2026-10-01: a download whose type could not be inferred was scored
+    # False in both LEDownload and CDDownload, so pages_LEDownload = 0 could mean
+    # "no LE download" or "a download of unknown type" (964 users). This is the
+    # unknown_ companion every other pages_ column already has.
+    is_doc = ev.path.str.startswith("/Download/LoanDocument/")
+    u["downloads_type_unknown"] = (ev.assign(_x=is_doc & ev.download_type_inferred.isna())
+                                     .groupby("user_hash")._x.sum())
+    note("downloads_type_unknown", "user",
+         "Borrower-document downloads whose type could not be inferred.",
+         "The unknown_ companion of pages_LEDownload / pages_CDDownload: those count "
+         "confirmed (inferred) cases only, so 0 there with a non-zero value here means "
+         "'type unknown', not 'did not download'.", "DEC-X")
+
     # -------------------------------------------------- joinable attributes
     acct = (pd.read_excel(DATA / "talkument_useraccount.xlsx", sheet_name="users")
               .drop_duplicates("user_hash").set_index("user_hash"))
@@ -425,8 +440,9 @@ def main() -> None:
     u["pilot_bucket_label"] = u.pilot_bucket.map(PILOT_BUCKET_LABELS)
     # reindex with fill_value rather than fillna: reindexing a bool series onto a
     # wider index yields object dtype, and fillna on that is deprecated.
-    u["pilot_bucket_conflicting"] = (gb.bucket.nunique().gt(1)
-                                     .reindex(u.index, fill_value=False).astype(bool))
+    # AUDIT 2026-10-01: users with no bucket at all are NULL here, not False —
+    # "not conflicting" is a claim about loans we cannot see.
+    u["pilot_bucket_conflicting"] = gb.bucket.nunique().gt(1).reindex(u.index).astype("boolean")
     u["language_preference"] = gb.language_preference.agg(single_or_null).reindex(u.index)
     u["state"] = gb.state.agg(single_or_null).reindex(u.index)
     note("pilot_bucket_label", "loan", "Plain-language name of the pilot bucket.",
@@ -437,7 +453,8 @@ def main() -> None:
          "NULL where a user holds loans in different buckets. Bucket 1 never appears: those "
          "borrowers had no Talkument access and so generate no clickstream.")
     note("pilot_bucket_conflicting", "loan", "True if the user's loans span more than one bucket.",
-         "567 users. Excluded from pilot_bucket rather than assigned a guess.")
+         f"{int(u.pilot_bucket_conflicting.sum()):,} users; excluded from pilot_bucket rather "
+         "than assigned a guess. NULL for users linked to no pilot loan at all.")
     note("language_preference", "loan", "Applicant's stated language preference.",
          "Pre-treatment and balanced across buckets; the appropriate language covariate.")
     note("state", "loan", "Applicant state.", "NULL where a user's loans disagree.")
@@ -528,7 +545,16 @@ def infer_download_type(ev: pd.DataFrame) -> pd.DataFrame:
 
     le = (ev.LoanEstimateRelated.fillna(0) == 1).values
     cd = (ev.CDRelated.fillna(0) == 1).values
-    ctx = pd.Series(np.where(le, "LE", np.where(cd, "CD", None)), index=ev.index)
+    # A page flagged BOTH LoanEstimateRelated and CDRelated counts as LE context
+    # (BOTH_LE_CD_CONTEXT). AUDIT 2026-10-01: this tie-break is the method, not a
+    # corner case. Only three paths carry both flags — /Module/your-loan-estimate-
+    # made-clear, /Module/people-and-process and a -1 variant — but they are the
+    # context for 7,157 of the 7,161 LE-labelled download events. Strictly LE-only
+    # context accounts for 4. "LE" therefore means "last LE/CD page was one of
+    # those modules"; see DEC-Z.
+    both = le & cd
+    ctx = pd.Series(np.where(both, BOTH_LE_CD_CONTEXT,
+                             np.where(le, "LE", np.where(cd, "CD", None))), index=ev.index)
     # the last qualifying page BEFORE this row, bounded by the session
     prior = (ctx.groupby([ev.user_hash, ev.session_id]).shift(1)
                 .groupby([ev.user_hash, ev.session_id]).ffill())
