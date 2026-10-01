@@ -7,7 +7,7 @@ so the schema is complete and stable; they are listed in the codebook with the
 reason.
 
 The output is built to be ANALYSED BY SOMEONE ELSE. Three consequences:
-  - every parameter is a CLI flag, so a different assumption is a re-run
+  - the session timeout is a CLI flag, so a different assumption is a re-run
   - every count that could be misread ships beside its own quality column
   - a codebook is generated from the code describing every column
 
@@ -37,7 +37,9 @@ DATA = ROOT / "data"
 
 # ---------------------------------------------------------------- parameters
 SESSION_TIMEOUT_MIN = 30      # DEC-N; §7-A is our assumption, never the professor's
-TIMEZONE = "UTC"              # DEC-R; eventdate is tz-naive, no input disagrees
+# DEC-R. A declaration, not a conversion: eventdate is tz-naive and is bucketed
+# as-is. Changing this string changes only the labels in the codebook and QA.
+TIMEZONE = "UTC"
 SENSITIVITY_GRID = [5, 10, 15, 20, 30, 45, 60, 120, 240]
 
 # Pilot buckets. CONFIRMED 2026-09-29 against data/loan_application_data_partial.csv,
@@ -63,9 +65,10 @@ CHARACTERISTICS = [
     "LoanEstimateRelated", "CDRelated", "Download", "Video", "Goal_to_inform",
     "Goal_to_Advise",
 ]
-# DEC-F: no LoanDocument-id -> type lookup exists in any input file.
-BLOCKED_CHARACTERISTICS = ["LEDocument", "CDDocument", "LEDownload", "CDDownload"]
-BLOCKED_MILESTONES = [
+# DEC-F: no LoanDocument-id -> type lookup exists in any input file, so the two
+# *Document columns stay all-NULL and the two *Download columns are inferred (DEC-X).
+DOCUMENT_CHARACTERISTICS = ["LEDocument", "CDDocument", "LEDownload", "CDDownload"]
+MILESTONES = [
     "t_application_to_activation", "t_activation_to_le_sent",
     "t_le_sent_to_first_le_visit", "t_activation_to_lock",
     "t_last_access_to_current_status",
@@ -109,6 +112,11 @@ def sessionize(ev: pd.DataFrame, timeout_s: int) -> pd.DataFrame:
     return ev
 
 
+def single_or_null(s: pd.Series):
+    """The value if every row agrees, else NULL — never a guess between them."""
+    return s.iloc[0] if s.nunique() == 1 else np.nan
+
+
 def parent_page_index(ev: pd.DataFrame) -> pd.Series:
     """Index of the most recent non-mp3 row in the same session (spec §5 var 33).
 
@@ -134,7 +142,13 @@ def main() -> None:
     # Dropped before sessionization so dwell flows page-to-page. The only rows
     # removed anywhere in the pipeline.
     dropped = int((ev.row_class == "non_pageview").sum())
-    ev = ev[ev.row_class != "non_pageview"].reset_index(drop=True)
+    ev = ev[ev.row_class != "non_pageview"]
+
+    # Spec §1 sort key, enforced here rather than trusted from Phase 1: every
+    # order-dependent step below (sessions, dwell, parent page, download context)
+    # depends on it. _source_row is unique, so the order is total.
+    ev = (ev.sort_values(["user_hash", "eventdate", "_source_row"], kind="mergesort")
+            .reset_index(drop=True))
 
     ev = sessionize(ev, timeout_s)
     ev = infer_download_type(ev)          # DEC-X
@@ -327,26 +341,13 @@ def main() -> None:
         "t_last_access_to_current_status":
             "Seconds from the borrower's last access to the loan's current status date.",
     }
-    WAIT_MILESTONE = ("A file containing the loan milestone dates (application, "
-                      "LE/TIL sent, lock, current status), joinable on loannumber or "
-                      "user_hash. talkument_loan_applicants.xlsx was expected to hold "
-                      "these but contains none of them.")
     loans = load_loans()
-    BLOCKED_MILESTONES_NOW = [] if loans is not None else BLOCKED_MILESTONES
-
-    for c in BLOCKED_MILESTONES_NOW:
-        u[c] = pd.Series(pd.NA, index=u.index, dtype="Int64")
+    for c in MILESTONES:
         note(c, "user", MILESTONE_DEFS[c],
-             "Column is present but empty for every user so the schema stays stable. "
-             "These durations may legitimately be negative once built — do not clip.",
-             "DEC-F", WAIT_MILESTONE)
-    if not BLOCKED_MILESTONES_NOW:
-        for c in BLOCKED_MILESTONES:
-            note(c, "user", MILESTONE_DEFS[c],
-                 "Signed seconds; negative values are real and must not be clipped. "
-                 "Computed from the user's EARLIEST pilot loan by application date "
-                 "(DEC-V); see loans_in_pilot for users holding several.", "DEC-V")
-    BLOCKED_DEFS = {
+             "Signed seconds; negative values are real and must not be clipped. "
+             "Computed from the user's EARLIEST pilot loan by application date "
+             "(DEC-V); see loans_in_pilot for users holding several.", "DEC-V")
+    DOC_DEFS = {
         "LEDocument": "the page is a downloaded Loan Estimate document",
         "CDDocument": "the page is a downloaded Closing Disclosure document",
         "LEDownload": "the event is a download of a Loan Estimate",
@@ -365,25 +366,25 @@ def main() -> None:
         "Validated at 87.0% self-consistency, and Closing Disclosure downloads land "
         "a median 12 days later than Loan Estimate ones, as they should. Set "
         "downloads_type_inferred to 0 to exclude these entirely.")
-    for c in BLOCKED_CHARACTERISTICS:
+    for c in DOCUMENT_CHARACTERISTICS:
         if c in ("LEDownload", "CDDownload"):
             flag = (ev[c].fillna(False)).astype(bool)
             u[f"pages_{c}"] = ev.assign(_f=flag).groupby("user_hash")._f.sum()
             u[f"time_{c}"] = (ev.assign(_t=ev.time_on_page.where(flag))
                                 .groupby("user_hash")._t.sum())
-            note(f"pages_{c}", "user", f"Downloads where {BLOCKED_DEFS[c]}.",
+            note(f"pages_{c}", "user", f"Downloads where {DOC_DEFS[c]}.",
                  INFERRED_CAVEAT, "DEC-X")
-            note(f"time_{c}", "user", f"Seconds on downloads where {BLOCKED_DEFS[c]}.",
+            note(f"time_{c}", "user", f"Seconds on downloads where {DOC_DEFS[c]}.",
                  INFERRED_CAVEAT, "DEC-X")
         else:
             u[f"pages_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
             u[f"time_{c}"] = pd.Series(pd.NA, index=u.index, dtype="Int64")
-            note(f"pages_{c}", "user", f"Pageviews where {BLOCKED_DEFS[c]}.",
+            note(f"pages_{c}", "user", f"Pageviews where {DOC_DEFS[c]}.",
                  "NOT COMPUTED — kept as the measured-only counterpart of "
                  f"pages_{c.replace('Document','Download')}, which is inferred. In this "
                  "data the two would be identical row-for-row, since every borrower "
                  "document path is already a download.", "DEC-F", WAIT_DOCTYPE)
-            note(f"time_{c}", "user", f"Seconds on pages where {BLOCKED_DEFS[c]}.",
+            note(f"time_{c}", "user", f"Seconds on pages where {DOC_DEFS[c]}.",
                  "NOT COMPUTED. Same reason.", "DEC-F", WAIT_DOCTYPE)
 
     u["downloads_type_inferred"] = (ev.assign(_x=ev.download_type_inferred.fillna(False))
@@ -412,16 +413,14 @@ def main() -> None:
     br = (appl.dropna(subset=["user_hash"])
               .merge(buck, left_on="loannumber", right_on="loan_number", how="inner"))
     gb = br.groupby("user_hash")
-    u["pilot_bucket"] = (gb.bucket.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan)
-                           .reindex(u.index).astype("Int64"))
+    u["pilot_bucket"] = gb.bucket.agg(single_or_null).reindex(u.index).astype("Int64")
     u["pilot_bucket_label"] = u.pilot_bucket.map(PILOT_BUCKET_LABELS)
     # reindex with fill_value rather than fillna: reindexing a bool series onto a
     # wider index yields object dtype, and fillna on that is deprecated.
     u["pilot_bucket_conflicting"] = (gb.bucket.nunique().gt(1)
                                      .reindex(u.index, fill_value=False).astype(bool))
-    u["language_preference"] = gb.language_preference.agg(
-        lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
-    u["state"] = gb.state.agg(lambda s: s.iloc[0] if s.nunique() == 1 else np.nan).reindex(u.index)
+    u["language_preference"] = gb.language_preference.agg(single_or_null).reindex(u.index)
+    u["state"] = gb.state.agg(single_or_null).reindex(u.index)
     note("pilot_bucket_label", "loan", "Plain-language name of the pilot bucket.",
          "Sort or filter on this, or on pilot_bucket. Bucket 1 never appears: those "
          "borrowers had no Talkument access, so they generate no clickstream and have "
@@ -436,8 +435,7 @@ def main() -> None:
     note("state", "loan", "Applicant state.", "NULL where a user's loans disagree.")
 
     # ------------------------------------------- loan outcomes & milestones
-    if loans is not None:
-        u = attach_loan_data(u, ev, loans, appl)
+    u = attach_loan_data(u, ev, loans, appl)
 
     u = u.reset_index()
 
@@ -491,7 +489,7 @@ def main() -> None:
     pd.DataFrame(rows).to_csv(OUT / "session_timeout_sensitivity.csv", index=False)
 
     if not args.no_excel:
-        write_workbook(u, cb, sess, args)
+        write_workbook(u, cb)
 
     qa(ev, sess, u, dropped, args)
     print(f"users {len(u):,}  columns {u.shape[1]}  sessions {len(sess):,}")
@@ -518,7 +516,6 @@ def infer_download_type(ev: pd.DataFrame) -> pd.DataFrame:
     — was tested and REJECTED: 62.6% holdout accuracy against 50% chance, with
     1,009 of 2,154 LE documents misclassified. It is not used.
     """
-    ev = ev.sort_values(["user_hash", "eventdate", "_source_row"]).reset_index(drop=True)
     is_doc = ev.path.str.startswith("/Download/LoanDocument/")
 
     le = (ev.LoanEstimateRelated.fillna(0) == 1).values
@@ -550,11 +547,12 @@ def infer_download_type(ev: pd.DataFrame) -> pd.DataFrame:
 def load_loans():
     """The loan-application extract: outcomes, milestone dates, rate and credit.
 
-    Returns None if the file is absent, so the pipeline still runs without it
-    and the affected columns fall back to all-NULL.
+    Required. Without it the loan outcome and milestone columns cannot be built,
+    and a deliverable silently missing them is worse than a failed run.
     """
     if not LOAN_FILE.exists():
-        return None
+        raise SystemExit(f"Missing {LOAN_FILE}: loan outcomes and milestone dates "
+                         "come only from this file.")
     d = pd.read_csv(LOAN_FILE)
     d = d[d.Loan_Number.notna()].copy()        # 39 trailing blank rows
     d["loannumber"] = d.Loan_Number.astype("int64").astype(str)
@@ -673,7 +671,7 @@ def attach_loan_data(u, ev, loans, appl):
     return u
 
 
-def build_notes(u, sess) -> pd.DataFrame:
+def build_notes(u) -> pd.DataFrame:
     """The 'Read Me First' sheet. The professor reads the workbook, not the repo,
     so every caveat that could change a conclusion has to live here."""
     R = []
@@ -770,8 +768,8 @@ def build_notes(u, sess) -> pd.DataFrame:
 
 
 # ================================================================ workbook
-def write_workbook(u, cb, sess, args) -> None:
-    """One workbook, two sheets: the data, and the dictionary that explains it.
+def write_workbook(u, cb) -> None:
+    """One workbook, three sheets: the notes, the data, and the dictionary.
 
     The dictionary travels with the data deliberately — a codebook in a separate
     file gets separated from the data it describes.
@@ -779,7 +777,7 @@ def write_workbook(u, cb, sess, args) -> None:
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
 
-    notes = build_notes(u, sess)
+    notes = build_notes(u)
     path = OUT / "user_level_dataset.xlsx"
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         notes.to_excel(xl, sheet_name="Read Me First", index=False)
@@ -795,7 +793,6 @@ def write_workbook(u, cb, sess, args) -> None:
         ws0 = xl.sheets["Read Me First"]
         ws0.column_dimensions["A"].width = 30
         ws0.column_dimensions["B"].width = 108
-        from openpyxl.styles import Border, Side
         for r in range(1, len(notes) + 2):
             a = ws0.cell(r, 1); b = ws0.cell(r, 2)
             b.alignment = Alignment(vertical="top", wrap_text=True)
@@ -926,38 +923,37 @@ def qa(ev, sess, u, dropped, args) -> None:
           f"**{u.pct_pages_classified.median():.1%}**",
           f"- users below 50% classified: {int((u.pct_pages_classified < 0.5).sum()):,}", ""]
 
-    if "loan_status" in u.columns:
-        L += ["## 7. Loan outcomes and milestone timers", "",
-              "FAILS IF a milestone timer is non-null for a user with no matched loan, "
-              "or if any timer was silently clipped at zero. Negative values are real: "
-              "the Loan Estimate is normally sent BEFORE the borrower first opens "
-              "Talkuments, which is what triggers the invitation.", ""]
-        L += ["| timer | non-null | median days | negative | min days |", "|---|---|---|---|---|"]
-        for c in ["t_activation_to_last_access", "t_application_to_activation",
-                  "t_activation_to_le_sent", "t_le_sent_to_first_le_visit",
-                  "t_activation_to_lock", "t_last_access_to_current_status"]:
-            v = u[c].dropna().astype(float)
-            L.append(f"| `{c}` | {len(v):,} ({len(v)/len(u):.1%}) | {v.median()/86400:,.1f} | "
-                     f"{int((v<0).sum()):,} ({(v<0).mean():.1%}) | {v.min()/86400:,.1f} |")
-        L.append("")
-        orphan = int((u[["t_application_to_activation"]].notna().any(axis=1)
-                      & u.loan_status.isna()).sum())
-        L.append(f"- timers set for a user with no matched loan: **{orphan:,}** "
-                 f"({'PASS' if orphan == 0 else 'FAIL'})")
-        L.append(f"- users with no loan match at all: {int(u.loan_status.isna().sum()):,} "
-                 f"({u.loan_status.isna().mean():.1%}) — the extract is partial, "
-                 "covering 25,318 of 27,650 pilot loans")
-        L.append("")
-        L += ["### Outcome distribution", "", "| status | users | share |", "|---|---|---|"]
-        vc = u.loan_status.value_counts()
-        for k, v in vc.items():
-            L.append(f"| {k} | {v:,} | {v/vc.sum():.1%} |")
-        L.append("")
-        L.append("Note the selection effect: origination among borrowers who opened "
-                 "Talkuments is far higher than among all pilot loans, because "
-                 "activating and progressing through the loan are both downstream of "
-                 "staying engaged. This is not a treatment effect.")
-        L.append("")
+    L += ["## 7. Loan outcomes and milestone timers", "",
+          "FAILS IF a milestone timer is non-null for a user with no matched loan, "
+          "or if any timer was silently clipped at zero. Negative values are real: "
+          "the Loan Estimate is normally sent BEFORE the borrower first opens "
+          "Talkuments, which is what triggers the invitation.", ""]
+    L += ["| timer | non-null | median days | negative | min days |", "|---|---|---|---|---|"]
+    for c in ["t_activation_to_last_access", "t_application_to_activation",
+              "t_activation_to_le_sent", "t_le_sent_to_first_le_visit",
+              "t_activation_to_lock", "t_last_access_to_current_status"]:
+        v = u[c].dropna().astype(float)
+        L.append(f"| `{c}` | {len(v):,} ({len(v)/len(u):.1%}) | {v.median()/86400:,.1f} | "
+                 f"{int((v<0).sum()):,} ({(v<0).mean():.1%}) | {v.min()/86400:,.1f} |")
+    L.append("")
+    orphan = int((u[["t_application_to_activation"]].notna().any(axis=1)
+                  & u.loan_status.isna()).sum())
+    L.append(f"- timers set for a user with no matched loan: **{orphan:,}** "
+             f"({'PASS' if orphan == 0 else 'FAIL'})")
+    L.append(f"- users with no loan match at all: {int(u.loan_status.isna().sum()):,} "
+             f"({u.loan_status.isna().mean():.1%}) — the extract is partial, "
+             "covering 25,318 of 27,650 pilot loans")
+    L.append("")
+    L += ["### Outcome distribution", "", "| status | users | share |", "|---|---|---|"]
+    vc = u.loan_status.value_counts()
+    for k, v in vc.items():
+        L.append(f"| {k} | {v:,} | {v/vc.sum():.1%} |")
+    L.append("")
+    L.append("Note the selection effect: origination among borrowers who opened "
+             "Talkuments is far higher than among all pilot loans, because "
+             "activating and progressing through the loan are both downstream of "
+             "staying engaged. This is not a treatment effect.")
+    L.append("")
 
     (OUT / "qa_phase2.md").write_text("\n".join(L))
 

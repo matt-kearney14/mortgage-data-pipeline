@@ -127,14 +127,6 @@ def load_beta_coding() -> pd.DataFrame:
     return pd.read_excel(CODING_SCHEME_PATH, sheet_name=SHEET_BETA_CODING, header=HEADER_DEFAULT)
 
 
-def load_alphabetical() -> pd.DataFrame:
-    return pd.read_excel(CODING_SCHEME_PATH, sheet_name=SHEET_ALPHABETICAL, header=HEADER_ROW2)
-
-
-def load_most_frequent() -> pd.DataFrame:
-    return pd.read_excel(CODING_SCHEME_PATH, sheet_name=SHEET_MOST_FREQUENT, header=HEADER_ROW2)
-
-
 # --------------------------------------------------------------------------
 # Section A — general inventory
 # --------------------------------------------------------------------------

@@ -30,7 +30,7 @@ from scipy import stats
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "diagnostics" / "output"
 OUT.mkdir(parents=True, exist_ok=True)
-ALPHA, POWER = 0.05, 0.80
+ALPHA = 0.05
 SPANISH = {"Spanish", "Espa?ol"}
 
 u = pd.read_parquet(ROOT / "output" / "user_level_dataset.parquet")
@@ -65,6 +65,7 @@ def block(frame, title, note=""):
             continue
         p = stats.mannwhitneyu(x, y).pvalue
         sp = np.sqrt(((len(x)-1)*x.var(ddof=1) + (len(y)-1)*y.var(ddof=1)) / (len(x)+len(y)-2))
+        # z for two-sided alpha 0.05 plus z for 80% power
         mde = (1.959964 + 0.841621) * sp * np.sqrt(1/len(x) + 1/len(y))
         star = " **\\***" if p < ALPHA else ""
         L.append(f"| {label} | {x.median():,.0f} | {y.median():,.0f} | {x.mean():,.0f} | "

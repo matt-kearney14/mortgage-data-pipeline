@@ -85,27 +85,19 @@ def parse(p):
             return (fmt, t, None)
     return (fmt, None, None)
 
-for df in (coded,):
-    parsed = df["CODING SCHEME"].apply(lambda p: pd.Series(parse(p), index=["fmt","topic","cc"]))
-    for c in ("fmt","topic","cc"):
-        df[c] = parsed[c]
+parsed = coded["CODING SCHEME"].apply(lambda p: pd.Series(parse(p), index=["fmt","topic","cc"]))
+for c in ("fmt","topic","cc"):
+    coded[c] = parsed[c]
 
 coded_pages = coded[coded.fmt != "AUDIO"]
 coded_audio = coded[coded.fmt == "AUDIO"].drop_duplicates("cc").set_index("cc")
 
 # ---------------------------------------------------------------- inference
-def topic_value(topic, flag, exclude=None):
-    if topic is None: return None, None
-    s = coded_pages[(coded_pages.topic == topic)]
-    if exclude is not None: s = s[s["CODING SCHEME"] != exclude]
-    v = s[flag].dropna()
-    if not len(v): return None, None
-    src = s.loc[v.index, "CODING SCHEME"].iloc[0]
-    return v.mode().iloc[0], src
-
-def format_value(fmt, flag, exclude=None):
-    if fmt is None: return None, None
-    s = coded_pages[(coded_pages.fmt == fmt)]
+def scope_value(scope_col, key, flag, exclude=None):
+    """Modal coded value of `flag` among coded pages sharing `key` in `scope_col`
+    ('fmt' or 'topic'), optionally holding one path out. -> (value, source path)."""
+    if key is None: return None, None
+    s = coded_pages[(coded_pages[scope_col] == key)]
     if exclude is not None: s = s[s["CODING SCHEME"] != exclude]
     v = s[flag].dropna()
     if not len(v): return None, None
@@ -114,9 +106,9 @@ def format_value(fmt, flag, exclude=None):
 
 def infer(fmt, topic, flag, exclude=None):
     if flag in FMT_SCOPED:
-        val, src = format_value(fmt, flag, exclude)
+        val, src = scope_value("fmt", fmt, flag, exclude)
         return val, src, "inferred_format"
-    val, src = topic_value(topic, flag, exclude)
+    val, src = scope_value("topic", topic, flag, exclude)
     return val, src, "inferred_topic"
 
 # ---------------------------------------------------------------- LOO validation
@@ -180,7 +172,7 @@ for path in vc.index:
             rec[f], rec[f+"__prov"] = exact[f], "coded"
         elif src_audio is not None and not pd.isna(src_audio[f]):
             rec[f], rec[f+"__prov"] = src_audio[f], "inferred_audio_cc"
-            rec.setdefault("inference_source", src_audio.name and coded_audio.loc[cc,"CODING SCHEME"] if "CODING SCHEME" in coded_audio.columns else None)
+            rec.setdefault("inference_source", src_audio["CODING SCHEME"])
         else:
             val, src, kind = infer(fmt, topic, f)
             if val is not None:
@@ -242,8 +234,7 @@ w()
 w("| flag | before (coded only) | after (coded + inferred + rule) | change |")
 w("|---|---|---|---|")
 ev_j = ev.join(d.set_index("path"), on="path")
-before_src = coded_idx
-ev_b = ev.join(before_src[FLAGS], on="path", rsuffix="_b")
+ev_b = ev.join(coded_idx[FLAGS], on="path", rsuffix="_b")
 for f in FLAGS:
     bef = ev_b[f].notna().sum() / N
     aft = ev_j[f].notna().sum() / N
@@ -288,9 +279,7 @@ w("rule) and audio clips — **no content page carries a value**.")
 w()
 w("| flag | coded page rows with a value | content-page coverage after inference |")
 w("|---|---|---|")
-pages_only = d[d.row_class.isin(["coded","content_page"])]
-ev_pages = ev.join(d.set_index("path"), on="path")
-ev_pages = ev_pages[ev_pages.row_class.isin(["coded","content_page"])]
+ev_pages = ev_j[ev_j.row_class.isin(["coded","content_page"])]
 for f in TOPIC_SCOPED:
     n_coded = int(coded_pages[f].notna().sum())
     cov = ev_pages[f].notna().sum() / max(len(ev_pages), 1)

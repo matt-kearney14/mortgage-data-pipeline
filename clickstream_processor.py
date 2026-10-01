@@ -9,13 +9,17 @@ Run:
     python3 clickstream_processor.py                 # parquet intermediate
     python3 clickstream_processor.py --excel         # also write .xlsx (slow)
     python3 clickstream_processor.py --compare       # before/after vs inherited
-    python3 clickstream_processor.py --unresolved-fill 0
+    python3 clickstream_processor.py --unresolved-fill 0          # DEC-L
+    python3 clickstream_processor.py --lang-en-switch always      # DEC-S
+    python3 clickstream_processor.py --lang-asset-paths           # DEC-M
 
 Outputs:
-    output/phase1_url_features.parquet      event grain, 337,581 rows
+    output/phase1_url_features.parquet      event grain, one row per log event
     output/variable_manifest.csv            generated here, never by hand
     output/discrepancy_log.csv              every path with an unresolved flag
     output/qa_phase1.md                     QA results, reported as measured
+    output/phase1_before_after.md           only with --compare
+    output/phase1_url_features.xlsx         only with --excel
 """
 from __future__ import annotations
 
@@ -52,11 +56,11 @@ LANG_ASSET_PATH_SWITCHING = False
 
 # DEC-S. /translations/en is NOT reliably a user action.
 #
-# The language toggle exists only in pilot arm 3. /translations/es occurs there
-# and nowhere else (292 events in arm 3, 0 in arm 2) — it is a genuine switch.
-# /translations/en occurs in BOTH arms at almost the same rate (9,085 in arm 2,
-# 9,114 in arm 3) and is preceded by a /Module/ page 85.0% and 83.8% of the time
-# respectively. Arm 2 has no toggle, so its 9,085 events cannot be user actions:
+# The language toggle exists only in pilot bucket 3. /translations/es occurs there
+# and nowhere else (292 events in bucket 3, 0 in bucket 2) — it is a genuine switch.
+# /translations/en occurs in BOTH buckets at almost the same rate (9,085 in bucket 2,
+# 9,114 in bucket 3) and is preceded by a /Module/ page 85.0% and 83.8% of the time
+# respectively. Bucket 2 has no toggle, so its 9,085 events cannot be user actions:
 # the app emits /translations/en when a module page loads. 117 of the 119
 # es-then-en pairs are 0 seconds apart — one page load, both resources.
 #
@@ -89,11 +93,15 @@ DICT_FLAGS = [
 # stable and downstream code does not read a fabricated 0 as a measured no.
 BLOCKED_ON_DOCUMENT_TYPE = ["LEDocument", "CDDocument", "LEDownload", "CDDownload"]
 
-# Flags the dictionary nominally supplies but DEC-F overrides to NULL. Excluded
-# from the manifest's dictionary loop and from the discrepancy log so they are
+# CDDocument is supplied by the dictionary but DEC-F overrides it to NULL, so it
+# is excluded from the manifest's dictionary loop and from the discrepancy log and
 # attributed once, to DEC-F, rather than counted twice.
-DICT_FLAGS_OVERRIDDEN = [f for f in DICT_FLAGS if f in BLOCKED_ON_DOCUMENT_TYPE]
 DICT_FLAGS_REPORTED = [f for f in DICT_FLAGS if f not in BLOCKED_ON_DOCUMENT_TYPE]
+
+
+def out_name(flag: str) -> str:
+    """Output column name for a dictionary flag (DEC-E renames ProcessRelated)."""
+    return "ProcessRelated_provisional" if flag == "ProcessRelated" else flag
 
 
 # ============================================================================
@@ -155,8 +163,10 @@ def add_language_state(df: pd.DataFrame, acct_lang: pd.Series) -> pd.DataFrame:
     """English_YN / Spanish_YN — stateful per user (spec §3, vars 18-19).
 
     Seeded from the account's provided_language, then switched by
-    /translations/{en,es} and by explicit /es/ or /en/ path segments, then
-    forward-filled. Mutually exclusive and exhaustive by construction.
+    /translations/es. /translations/en switches only under a non-default
+    --lang-en-switch (DEC-S), and /es/ or /en/ asset path segments only under
+    --lang-asset-paths (DEC-M). Forward-filled. Mutually exclusive and exhaustive
+    by construction.
 
     DEC-I: the dictionary is NOT consulted — it codes English=1 / Spanish=0 on
     every row, so inheriting it would label every Spanish page English.
@@ -294,7 +304,7 @@ def run_qa(df: pd.DataFrame, acct_lang: pd.Series) -> list[str]:
     L.append("")
     L.append("| column | non-null | coverage | ==1 | % of log |")
     L.append("|---|---|---|---|---|")
-    cols = [("ProcessRelated_provisional" if f == "ProcessRelated" else f) for f in DICT_FLAGS_REPORTED]
+    cols = [out_name(f) for f in DICT_FLAGS_REPORTED]
     for c in cols + ["AudioMp3", "English_YN", "Spanish_YN"]:
         nn = int(df[c].notna().sum()); ones = int((df[c] == 1).sum())
         L.append(f"| `{c}` | {nn:,} | {nn/len(df):.1%} | {ones:,} | {ones/len(df):.1%} |")
@@ -348,8 +358,7 @@ def compare(new: pd.DataFrame, old: pd.DataFrame) -> list[str]:
          "- **flip** — both sides have a value and they disagree; the old value was wrong.",
          "- **de-fabricated** — old said 0, new says NULL; there was never any evidence for the 0.",
          ""]
-    pairs = [("ProcessRelated_provisional" if f == "ProcessRelated" else f,
-              "ProcessRelated" if f == "ProcessRelated" else f) for f in DICT_FLAGS_REPORTED]
+    pairs = [(out_name(f), f) for f in DICT_FLAGS_REPORTED]
     pairs += [("English_YN", "English_YN"), ("Spanish_YN", "Spanish_YN"),
               ("AudioMp3", "AudioMp3"), ("LEDocument", "LEDocument"), ("CDDocument", "CDDocument")]
 
@@ -357,8 +366,6 @@ def compare(new: pd.DataFrame, old: pd.DataFrame) -> list[str]:
     L.append("|---|---|---|---|---|---|")
     flips = {}
     for nc, oc in pairs:
-        if nc not in new.columns or oc not in old.columns:
-            continue
         a, b = new[nc], old[oc]
         up = ((b == 0) & (a == 1)); down = ((b == 1) & (a == 0)); gone = ((b == 0) & a.isna())
         flips[nc] = (up | down)
@@ -395,12 +402,12 @@ def compare(new: pd.DataFrame, old: pd.DataFrame) -> list[str]:
 def write_manifest(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     def add(col, origin, provisional, dec, note):
-        nn = int(df[col].notna().sum()) if col in df.columns else 0
+        nn = int(df[col].notna().sum())
         rows.append(dict(column=col, origin=origin, dtype=str(df[col].dtype),
                          non_null=nn, coverage=round(nn / len(df), 4),
                          provisional=provisional, decision_id=dec, note=note))
     for f in DICT_FLAGS_REPORTED:
-        col = "ProcessRelated_provisional" if f == "ProcessRelated" else f
+        col = out_name(f)
         dec, prov, note = "DEC-G", True, "dictionary + sibling inference; see __prov column"
         if f == "ProcessRelated":
             dec, note = "DEC-E", "professor flagged ???? in his own sheet"
@@ -454,8 +461,7 @@ def main() -> None:
     # unresolved flag, with its hit count, for the professor.
     # DEC-F columns are NULL by design and are not discrepancies; excluding them
     # is what keeps this log meaningful rather than listing every path in the log.
-    flag_cols = [("ProcessRelated_provisional" if f == "ProcessRelated" else f)
-                 for f in DICT_FLAGS_REPORTED]
+    flag_cols = [out_name(f) for f in DICT_FLAGS_REPORTED]
     per_path = (df.drop_duplicates(URL_COL).set_index(URL_COL)[flag_cols].isna().sum(axis=1)
                   .rename("unresolved_flags"))
     disc = (df.groupby([URL_COL, "row_class"]).size().rename("events").reset_index()

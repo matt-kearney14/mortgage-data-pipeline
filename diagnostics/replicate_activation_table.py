@@ -32,7 +32,7 @@ activated = set(acct.loc[acct.first_login.notna(), "user_hash"])
 br = appl.merge(buck, left_on="loannumber", right_on="loan_number", how="inner").drop_duplicates()
 br["act"] = br.user_hash.isin(activated)
 
-def rates(f, unit):
+def rates(f):
     out = {}
     for lang in ["English", "Spanish", "Other"]:
         r = {}
@@ -63,7 +63,7 @@ L["lang"] = np.where(L.any_es, "Spanish", np.where(L.any_en, "English", "Other")
 
 lines = [__doc__.strip(), "", "## The paper's Table 2", "", PAPER.to_markdown(), ""]
 for label, f in [("per borrower", P), ("per loan (any applicant activated)", L)]:
-    r = rates(f, label)
+    r = rates(f)
     lines += [f"## Our replication — {label}", "", r.round(2).to_markdown(), ""]
     gaps = {k: r.loc[k, "Any Aid"] - PAPER.loc[k, "Any Aid"] for k in PAPER.index}
     lines += ["gap vs paper (Any Aid): " +
@@ -71,7 +71,7 @@ for label, f in [("per borrower", P), ("per loan (any applicant activated)", L)]
 
 lines += ["## Treatment differences — the quantity that matters", "",
           "| contrast | paper | ours (per loan) | gap |", "|---|---|---|---|"]
-rl = rates(L, "loan")
+rl = rates(L)
 for lab, pk in [("Bilingual uplift, Spanish", "Spanish"),
                 ("Bilingual uplift, English", "English"),
                 ("Bilingual uplift, entire sample", "Entire sample")]:
