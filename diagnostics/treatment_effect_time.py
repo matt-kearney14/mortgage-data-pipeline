@@ -12,15 +12,17 @@ Design
   Primary    Spanish-preference borrowers — the only group the treatment can
              plausibly affect. English speakers are the placebo group.
   Covariate  language_preference from the applicant file, which is
-             pre-treatment and balanced across arms. NOT provided_language,
-             which encodes the arm itself (DEC-S).
+             pre-treatment and balanced across buckets. NOT provided_language,
+             which encodes the bucket itself (DEC-S).
   Test       Mann-Whitney U. Time and page counts are heavily right-skewed,
              so ranks are the appropriate comparison and medians the
              appropriate summary.
   Excluded   Users whose loans span several buckets (no clean assignment).
              Bucket 1 entirely: those borrowers had no software access, so they
-             have no clickstream. Bucket 1 can only be compared on loan outcomes,
-             which are not present in any file we hold.
+             have no clickstream. Bucket 1 can only be compared on loan outcomes
+             (data/loan_application_data_partial.csv), which this script does not
+             analyse — and the extract is missing 13.6% of bucket-1 loans against
+             5.9% of buckets 2 and 3.
 """
 import numpy as np
 import pandas as pd
@@ -96,12 +98,11 @@ L.append("")
 # ---------------------------------------------------------------- DiD
 L.append("## Difference-in-differences — the placebo group is not inert, so this is required")
 L.append("")
-L.append("Median session length is significant in BOTH groups. In the placebo group that")
-L.append("is a sample-size artifact, not an effect: n = 9,141 there, so the minimum")
-L.append("detectable difference is 27 seconds and a 9-second gap clears it. The honest")
-L.append("comparison is therefore not bucket 3 vs bucket 2 within Spanish speakers, but how much")
-L.append("larger that gap is than the same gap among English speakers, who the treatment")
-L.append("cannot reach.")
+eng_all = d[d.language_preference == "English"]
+L.append("A significant bucket gap among English speakers, whom the treatment cannot reach, "
+         f"would be a sample-size artifact rather than an effect: n = {len(eng_all):,} there. The")
+L.append("honest comparison is therefore not bucket 3 vs bucket 2 within Spanish speakers, but")
+L.append("how much larger that gap is than the same gap among English speakers.")
 L.append("")
 rng = np.random.default_rng(20260924)          # seed fixed and declared (CLAUDE.md #8)
 L.append("| measure | Spanish bucket2->bucket3 | English bucket2->bucket3 | difference-in-differences | 95% CI (bootstrap) |")
@@ -139,9 +140,10 @@ L += ["## How to read this", "",
       "`total_time_observed` excludes the last page of every session, whose duration",
       "is unobservable. It is a consistent undercount across both buckets, so the",
       "comparison is valid, but the absolute level is not total time in the software.", "",
-      "**Loan outcomes are not in scope.** No file in `data/` records whether a",
-      "borrower's loan funded, closed, was denied or withdrawn. That question cannot",
-      "be answered from these inputs at all — it is not a power problem.", ""]
+      "**Loan outcomes are not analysed here.** They are in the user-level dataset",
+      "(`loan_status`, `loan_originated`) from the loan extract, but origination among",
+      "borrowers who opened Talkuments is selected on engagement, so a bucket comparison of",
+      "outcomes belongs at the loan grain across all three buckets, not in this file.", ""]
 
 (OUT / "treatment_effect_time.md").write_text("\n".join(L))
 print("\n".join(L[L.index("## Primary comparison — Spanish-preference borrowers")

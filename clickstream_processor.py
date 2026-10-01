@@ -262,6 +262,11 @@ def run_qa(df: pd.DataFrame, acct_lang: pd.Series) -> list[str]:
         ok = (g.computed == g.account).sum()
         L.append(f"| `{lang}` | {len(g):,} | {ok:,} | {1 - ok/len(g):.2%} |")
     L.append("")
+    L.append("**Correction, 2026-09-15.** An earlier version of this report described the")
+    L.append("Spanish mismatch under `--lang-en-switch always` (11.5%) as a behavioural")
+    L.append("finding. It was not — it was an artifact of treating `/translations/en` as a")
+    L.append("user action when the app emits it on module page loads. See DEC-S.")
+    L.append("")
 
     L.append("## 2. English_YN + Spanish_YN == 1 on every row")
     L.append("")
@@ -272,9 +277,9 @@ def run_qa(df: pd.DataFrame, acct_lang: pd.Series) -> list[str]:
     L.append("")
     bad = int((df.English_YN + df.Spanish_YN != 1).sum())
     L.append(f"- rows failing: **{bad:,}** ({'PASS' if bad == 0 else 'FAIL'})")
-    L.append(f"- rows whose language came from a path switch rather than the seed: "
+    L.append(f"- rows by language seed source: "
              f"{int((df.language_seed_source == 'account').sum()):,} account-seeded, "
-             f"{int((df.language_seed_source == 'default').sum()):,} default-seeded")
+             f"{int((df.language_seed_source == 'default').sum()):,} default-seeded (DEC-K)")
     L.append("")
 
     L.append("## 3. Spanish volume is non-zero")
@@ -314,11 +319,6 @@ def run_qa(df: pd.DataFrame, acct_lang: pd.Series) -> list[str]:
     L.append("")
     dup = int((df[URL_COL] == df.groupby(USER_COL)[URL_COL].shift(1)).sum())
     L.append(f"- consecutive same-URL pageviews retained: **{dup:,}** ({dup/len(df):.1%})")
-    L.append("**Correction, 2026-09-15.** An earlier version of this report described the")
-    L.append("Spanish mismatch as a behavioural finding. It was not — it was an artifact of")
-    L.append("treating `/translations/en` as a user action when the app emits it on module")
-    L.append("page loads. Under `--lang-en-switch never` the mismatch falls from 11.5% to")
-    L.append("0.0%. See DEC-S.")
     L.append("")
     return L
 
