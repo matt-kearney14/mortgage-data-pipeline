@@ -1,12 +1,13 @@
 # Mortgage Clickstream Project — Brief
 
 **Companion to:** `Clickstream_Variable_Specification_v2.md` (full variable definitions)
-**Status, 2026-10-01:** Phase 0 (diagnostics), Phase 1 (URL features) and Phase 2
+**Status, 2026-10-08:** Phase 0 (diagnostics), Phase 1 (URL features) and Phase 2
 (sessions, aggregates, loan join, user-level dataset) are **built and running**.
 The deliverable is `output/user_level_dataset.xlsx`. An independent audit
-(`docs/AUDIT_REPORT_2026-10-01.md`) corrected defects in Phase 2 and reconciled
-this brief to the data.
-**Last verified against data:** 2026-10-01, by `diagnostics/audit_recompute.py`,
+(`docs/AUDIT_REPORT_2026-10-01.md`) corrected defects in Phase 2; on 2026-10-08
+every variable was taken to full coverage without overriding the professor's
+coding (DEC-AA to DEC-AF).
+**Last verified against data:** 2026-10-08, by `diagnostics/audit_recompute.py`,
 `diagnostics/crossvalidate.py` and `diagnostics/replicate_activation_table.py`.
 
 > This brief previously said the inherited pipeline was "under review", Phase 2
@@ -48,29 +49,29 @@ complete control group.
 | Phase | Variables | Status |
 |---|---|---|
 | 0 — input diagnostics | — | Complete. `diagnostics/output/inventory_report.md`, `coverage_report.md`, `dictionary_inference_report.md` |
-| 0 — path dictionary | `Personalized` … `Goal_to_Advise` | Complete. Extended from the coded paths to all 9,471, with provenance on every cell (DEC-G/H/I). |
+| 0 — path dictionary | `Personalized` … `Goal_to_Advise` | Complete. The professor's coding, his blanks filled from `docs/page_template_coding.csv`, provenance on every cell (DEC-AD). |
 | 1 — URL & path features | URL-level flags, language state | Built. `output/phase1_url_features.parquet`, `qa_phase1.md` |
-| 2 — sessions & durations | `time_on_page`, `session_*`, `pages_in_session` | Built. 34,403 sessions at 30 min (DEC-N). Browser assets and the `/translations/en` page resource are dropped first (DEC-P, DEC-Z). |
+| 2 — sessions & durations | `time_on_page`, `session_*`, `pages_in_session` | Built at 30 min (DEC-N). Test accounts, browser assets and the `/translations/*` language files are dropped first (DEC-AA, DEC-P, DEC-Z, DEC-AB). |
 | 2 — volume & per-characteristic | `webpages_visited` … `pages_*`, `time_*`, `unknown_*` | Built. `pages_*` counts a row's own flags (spec var 32). `time_*` credits clip time to the parent page (var 33). |
 | 2 — milestone timers | all six `t_*` | Built from the loan extract. Computed from each borrower's earliest loan (DEC-V). |
-| 2 — download type | `LEDownload`, `CDDownload` | **Inferred**, not measured (DEC-X, DEC-Z). |
-| 2 — document type | `LEDocument`, `CDDocument` | **Empty.** Needs a LoanDocument-id → type lookup (DEC-F). |
+| 2 — download type | `LEDownload`, `CDDownload` | Built per download from the page it was clicked from, the same document elsewhere, or number order; each records which (DEC-AC). |
+| 2 — document type | `LEDocument`, `CDDocument` | Built: the page shows the borrower's own LE / CD (DEC-AC). |
 
 Deliverable: `output/user_level_dataset.xlsx`, with the sheets **Read Me First**,
-**User Data** (10,140 × 99) and **Data Dictionary** (one row per column).
+**User Data** (10,138 × 106) and **Data Dictionary** (one row per column).
 
 ### Spec variables → output
 
 | spec vars | where |
 |---|---|
 | 1–12, 15–21 (URL flags, language) | event grain: `phase1_url_features.parquet`, `phase2_events.parquet` |
-| 13–14 `LEDownload`/`CDDownload` | event grain (inferred). User grain: `pages_`/`time_LEDownload`, `…CDDownload` |
-| 16 `Audio` | event grain only. It holds 0/1, not the count the spec defines (DEC-J). |
+| 13–14 `LEDownload`/`CDDownload` | event grain. User grain: `pages_`/`time_LEDownload`, `…CDDownload`, `downloads_typed_by_*`, `downloads_type_unknown` |
+| 16 `Audio` | event grain only: the count of clips that play on the page (DEC-AE). |
 | 22–24 dwell, session start/end | `phase2_events.parquet` |
 | 25–27 | `phase2_sessions.parquet` |
 | 28–31, 34–36 | `webpages_visited`, `spanish_`/`english_webpages_visited`, `unique_webpages_visited`, `audio_clips_clicked`, `num_sessions`, `days_accessed` |
-| 32–33 | 18 `pages_*` and 18 `time_*` columns. `LEDocument`/`CDDocument` are empty, and `LEDownload`/`CDDownload` are inferred. |
-| 37–42 | `t_activation_to_last_access`, `t_application_to_activation`, `t_activation_to_le_sent`, `t_le_sent_to_first_le_visit`, `t_activation_to_lock`, `t_last_access_to_current_status` |
+| 32–33 | 18 `pages_*` and 18 `time_*` columns, with `unknown_*` beside them. |
+| 37–42 | `t_activation_to_last_access`, `t_application_to_activation`, `t_activation_to_le_sent`, `t_le_sent_to_first_le_visit`, `t_activation_to_lock`, `t_last_access_to_current_status`; `milestone_blank_reason` (DEC-AF) |
 
 ---
 
@@ -124,29 +125,20 @@ invented their own ordering, and they disagree: `Audio` is **16** in the spec an
 
 | # | Question | Status | Owner |
 |---|---|---|---|
-| B | Are download URLs type-identifiable? | **Closed — no** (DEC-F) | — |
+| B | Are download URLs type-identifiable? | **Closed — no** (DEC-F); typed per download from evidence instead (DEC-AC) | — |
 | C | `beta_coding` vs `coding_dictionary` | **Closed** (DEC-C) | — |
 | D | Is an activated-language field available? | **Closed — yes**, `provided_language`, but it encodes the treatment (DEC-S) | — |
-| E | `ProcessRelated` is marked `????` in the professor's own sheet | **Open** | Professor |
-| — | Code the 28 remaining content paths (6 uncoded topics) | **Open** | Professor |
-| — | Supply a LoanDocument-id → document-type lookup | **Open** | Professor / data owner |
-| — | Keep or drop the inferred `LEDownload`/`CDDownload` (see DEC-Z) | **Open** | Research team |
-| — | Confirm `/translations/en` is not a pageview (DEC-Z) | **Open**. Reversible with `--keep-translation-resources` | Someone who knows the app |
+| E | `ProcessRelated` is marked `????` in the professor's own sheet | **Open**; his values kept | Professor |
+| — | Confirm the cells coded by us (DEC-AD) and Audio as a count (DEC-AE) | **Open** — `docs/Professor_Questions.md` | Professor |
+| — | Optional LoanDocument-id → type lookup | Open, no longer blocking | Data owner |
 | — | The missing 2,332 loans, concentrated in bucket 1 | **Open** | Data owner |
 | A | Session timeout of 30 min is our assumption | Decided (DEC-N). Sensitivity is regenerated every run. | Us |
 | G | Timezone for calendar-day bucketing | Decided (DEC-R). The data is naive. | Us |
+| — | Test accounts, language, download type, blanks | Decided (DEC-AA, DEC-AB, DEC-AC, DEC-AF) | Research team |
 
 ## What the professor needs to decide
 
-1. **A LoanDocument-id → document-type lookup.** It would replace two inferred
-   variables with measured ones and fill two empty ones (17,502 download events).
-2. **Code 6 uncoded topics** (28 paths, 8.45% of events). These are ready for him
-   in `output/dictionary_review_for_professor.xlsx`.
-3. **`ProcessRelated`**: the `????` (DEC-E). In the data, 19,465 rows are Borrower-
-   or Lender-process-related without being `ProcessRelated`, so it is not their union.
-4. **Confirm or overrule the inferred codings.** Same workbook, `Inferred_pages` sheet.
-5. **Is `LoanTermsRelated` meant to apply to pages at all?** In `beta_coding` it is
-   blank on all 26 page rows and coded only on audio clips. As a result
-   `time_LoanTermsRelated` is structurally near zero. `Goal_to_inform` and
-   `Goal_to_Advise` are coded on only 6 of the 26 page rows. The leave-one-out
-   test finds no coded sibling to predict them from, so their inference is untested.
+See `docs/Professor_Questions.md`. In short: confirm or correct the cells coded by
+us (each page in `output/dictionary_review_for_professor.xlsx`), rule on
+`ProcessRelated`, and on the few places where his own coding is inconsistent or
+where Audio as a count differs from his 0/1.

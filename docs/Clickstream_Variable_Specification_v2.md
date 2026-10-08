@@ -116,6 +116,11 @@ These flags are **not mutually exclusive**. A single URL routinely fires many at
 > is therefore emitted as an integer-typed column holding 0/1 (DEC-J). Any analysis
 > treating it as a count is wrong.
 
+> **⚠ AUDIT NOTE 2026-10-08 — superseded.** `Audio` is now the count (DEC-AE): the
+> number of distinct clips that play on the page, measured from which page each
+> clip is played from. A clip row is 0. The professor's 0/1 is kept as
+> `Audio_professor` in the path dictionary.
+
 ### Validation pass (required)
 
 The dictionary is a static ~103-path list; the production site emits dynamic URLs. Run pattern matching **as a check, not as the definition**:
@@ -179,6 +184,13 @@ Algorithm (per user, in sort order):
 > `/translations/es` only by default (DEC-S; `--lang-en-switch always` restores
 > this text). It also excludes `/translations/en` rows from pageview counts and
 > dwell (DEC-Z).
+
+> **⚠ AUDIT NOTE 2026-10-08 — revised (DEC-AB).** In Spanish the app requests both
+> `/translations/es` and `/translations/en` within the same second; in English,
+> `/translations/en` alone. Requests within 2 s form one load: a load with `es` is
+> Spanish, one with only `en` is English. The load sets its own page and every page
+> after it until the next load — step 2 above, applied to loads rather than to
+> single requests. Neither file is a pageview.
 
 Properties: the two are **mutually exclusive and exhaustive**, so `var29 + var30 == var28` exactly. This is a hard QA check (§8).
 
@@ -359,6 +371,13 @@ Not present in the professor's spec; carried over from the inherited doc. It is 
 ### B. Are download URLs type-identifiable? **[blocking vars 10, 11, 13, 14]**
 The sheet marks `LEDocument` and `CDDocument` as *hard coded*, but real download URLs of the form `/Download/LoanDocument/{id}` are dynamic and cannot be enumerated in a static ~103-path dictionary. Either the dictionary covers module-level download pages (in which case the hardcoded reading works), or an external document ID → type map is required.
 **Action:** list every distinct URL where `Download == 1` and determine which case holds. This decides between the primary and fallback definitions in §3.
+
+> **⚠ AUDIT NOTE 2026-10-08 — resolved without a map (DEC-AC).** Neither case
+> holds: no type token, no map. `LEDocument`/`CDDocument` are read as "the page
+> shows the borrower's own LE / CD" (the LE and CD pages, the Dashboard, and typed
+> downloads), and each download is typed from the page it was clicked from, the same
+> document elsewhere, or document number order, recording which. §3's formula
+> `LEDownload = Download AND LEDocument` then holds on every download row.
 
 ### C. `beta_coding` vs `coding_dictionary`
 The inherited doc cites both without explaining their relationship. **Action:** determine which is authoritative and whether `beta_coding` extends or overrides. Document any path coded differently between them.

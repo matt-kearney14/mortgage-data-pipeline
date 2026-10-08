@@ -49,7 +49,7 @@ These names are frozen. Use them in code, output, docs, and commit messages.
 | LEDownload | `LEDownload` | binary | OURS |
 | CDDownload | `CDDownload` | binary | OURS |
 | AudioMp3 | `AudioMp3` | binary | FIXED |
-| Audio | `Audio` | **integer count** per spec; 0/1 in practice (DEC-J) | FIXED |
+| Audio | `Audio` | **integer count**: distinct clips that play on the page (DEC-AE) | FIXED |
 | Video | `Video` | binary | FIXED |
 | English (Y/N) | `English_YN` | binary | OURS |
 | Spanish (Y/N) | `Spanish_YN` | binary | OURS |
@@ -63,6 +63,9 @@ These names are frozen. Use them in code, output, docs, and commit messages.
 inherited from the source. Preserve the dictionary's exact spelling for all FIXED
 columns — if the dictionary header differs from the table above, report the
 mismatch rather than silently renaming.
+
+`LEDocument`/`CDDocument` and the two download columns are computed (DEC-AC):
+the page shows the borrower's own LE / CD, and a download of that type.
 
 `session_start` / `session_end` are **booleans**, not timestamps. The derived
 timestamps are separate fields: `session_start_ts`, `session_end_ts`.
@@ -105,10 +108,11 @@ docs/
   AUDIT_REPORT_2026-10-01.md
   Clickstream_path_frequencies_and_coding_scheme.xlsx    tracked in git
 diagnostics/           read-only analysis scripts; output/ is gitignored
-  build_path_dictionary.py   PIPELINE STEP 1: extends beta_coding to all 9,471 paths
+  build_path_dictionary.py   PIPELINE STEP 1: beta_coding + page_template_coding.csv -> every path
   inventory.py               Phase 0 input inventory (predates the loan extract)
   coverage.py                Phase 0 dictionary coverage vs the event log
   audit_recompute.py         independent recomputation of the user-level table
+  build_coverage_sheet.py    the professor's 42 variables vs the dataset (xlsx)
   crossvalidate.py           quantities measured two independent ways
   replicate_activation_table.py   the paper's Table 2, three tabulations
   treatment_effect_time.py   exploratory bucket 3 vs 2 comparison (not a finding)
@@ -129,8 +133,13 @@ output/                pipeline outputs, gitignored
   codebook.csv                   the Data Dictionary sheet, machine-readable
   variable_manifest.csv          Phase 1 provisional columns + decision ids
   discrepancy_log.csv            paths with unresolved flags
-clickstream_processor.py    Phase 1 — URL-level characteristics
-phase2_user_dataset.py      Phase 2 — sessions, aggregates, loan join, user table
+pipeline_common.py          shared: input checks, event loader + test-user rule,
+                            page-template lookup, sessions. Defined once, imported by all.
+clickstream_processor.py    Phase 1 — URL-level characteristics, language state
+phase2_user_dataset.py      Phase 2 — sessions, event context (download type,
+                            Dashboard CD), aggregates, loan join, user table
+docs/page_template_coding.csv   TRACKED. Every page template's coding; fills the
+                            professor's blanks; the only place a coding is changed
 ```
 
 Run order: `diagnostics/build_path_dictionary.py` → `clickstream_processor.py`
@@ -158,10 +167,14 @@ it carries the professor's own wording, confirms `Audio` is meant to be a count,
 and holds his `????` flag on `ProcessRelated` — but it cannot drive the merge.
 
 **The pipeline reads `output/path_dictionary_extended.csv`**, built by
-`diagnostics/build_path_dictionary.py` from `beta_coding` plus sibling
-inference (DEC-G/H/I). It covers all 9,471 log paths and stamps every cell with
-a `__prov` provenance value. Filtering to `__prov == 'coded'` returns
-`beta_coding` exactly, so nothing is locked in.
+`diagnostics/build_path_dictionary.py` from `beta_coding` plus
+`docs/page_template_coding.csv` (DEC-AD; the sibling inference of DEC-G is
+retired). It covers every log path and stamps every cell with a `__prov` value:
+`coded` / `coded_same_page` / `coded_same_clip` (the professor's),
+`coded_by_us`, `navigation`, `clip_from_page`, `rule`, `context` (filled in
+phase 2), `page_resource`, `unresolved`. The professor's cell always wins; the
+template table only fills his blanks, and the build checks that it never
+contradicts him. Filtering to `__prov == 'coded'` returns `beta_coding` exactly.
 
 Known limits of `beta_coding`, all measured:
 - it matches **36.6%** of events on its own (100 of 9,471 distinct paths)
@@ -179,7 +192,8 @@ Known limits of `beta_coding`, all measured:
    the rule exists to prevent (DEC-L).** Unresolved flags are emitted **NULL**
    and written to `output/discrepancy_log.csv` with hit counts. A 0 asserts "we
    measured this and the answer is no"; an unclassified path supports no such
-   claim. The old behaviour is still reachable as `--unresolved-fill 0`.
+   claim. (The opt-in `--unresolved-fill 0` was removed in DEC-AD: no unresolved
+   cells remain, and it would have overwritten cells phase 2 decides.)
    Measured cost of the 0-fill: `Goal_to_inform` carried 108,162 fabricated
    zeros against 42,391 real ones, and the four download columns read as
    337,581 measured zeros when not one row had been evaluated.
@@ -237,19 +251,16 @@ professor's "try 60 minutes instead" is a rerun rather than an edit.
 
 ### Still genuinely open
 
-- **`ProcessRelated`** (§7-E) — professor's call. Compute as declared in
-  `beta_coding`, output as `ProcessRelated_provisional`. Do not treat it as the
-  union of Borrower and Lender. Do not inherit the old 48-path list.
+- **`ProcessRelated`** (§7-E) — professor's call. His values are kept as coded,
+  output as `ProcessRelated_provisional`; pages he did not code follow the coded
+  page of the same kind (DEC-AD). Do not treat it as the union of Borrower and
+  Lender. Do not inherit the old 48-path list.
+- **The cells coded by us** (DEC-AD) await his confirmation:
+  `docs/Professor_Questions.md`, `output/dictionary_review_for_professor.xlsx`.
 
-**Blocked on inputs we do not hold** (no workarounds; emit NULL):
-
-- **`LEDocument`, `CDDocument`.** Every download path is
-  `/Download/LoanDocument/{numeric id}` with no type token, so these need an
-  id → document-type lookup (DEC-F). `LEDownload`/`CDDownload` are *inferred* from
-  session context under spec §3's fallback (DEC-X). That inference is labelled
-  INFERRED everywhere and its limits are in DEC-Z.
-- **28 content paths across 6 uncoded topics.** These are routed to the professor
-  in `output/dictionary_review_for_professor.xlsx`.
+**Download type** has no lookup in any input. It is decided per download from the
+page it was clicked from, then the same document elsewhere, then document number
+order (DEC-AC); each download records which, and the rest stay NULL.
 
 The milestone timers are **not** blocked. All five come from
 `loan_application_data_partial.csv` (DEC-U, DEC-V).
@@ -271,7 +282,8 @@ report the mismatch count **within each language group**. Pooled, the population
 98.7% English and the check cannot fail. The current figures are in
 `output/qa_phase1.md` §1. The 11.48% Spanish mismatch measured earlier under the
 spec-literal switching rule turned out to be a defect, not a behavioural finding.
-`/translations/en` is emitted on page load (DEC-S).
+The app loads `/translations/en` (English) or both files (Spanish) with a page;
+language follows those loads (DEC-AB).
 
 **`provided_language` is not a pre-treatment covariate.** In the user-level file it
 reads `es` for 171 users in bucket 3 and 0 in bucket 2 (282 `es` accounts in the
