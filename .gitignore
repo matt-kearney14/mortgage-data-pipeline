@@ -9,3 +9,4 @@ diagnostics/output/
 ~$*
 .DS_Store
 __pycache__/
+!docs/page_template_coding.csv

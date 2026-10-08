@@ -1,314 +1,300 @@
 #!/usr/bin/env python3
-"""Build an extended path -> characteristic dictionary covering every path in the
-event log, with explicit provenance on every cell.
+"""PIPELINE STEP 1 — the path dictionary: every path in the log -> its flags,
+with the source of every cell recorded in a matching __prov column.
 
-Read-only with respect to all source files. Writes:
+Rebuilt 2026-10-08 (DEC-AD). Replaces the sibling-inference build, which left
+8% of events unresolved and had no basis for flags the professor never coded
+on a page. Each cell now comes from exactly one of these, in this order:
+
+  coded               the professor's own cell for this exact path (beta_coding)
+  coded_same_page     his cell for another path of the same page (a -1/-2 variant)
+  coded_same_clip     his cell for the same audio clip (CC_n) under another prefix
+  coded_by_us         docs/page_template_coding.csv, filling a cell he left blank
+  navigation          a navigation page: 0 by rule (also from the template table)
+  clip_from_page      an audio clip he did not code: the flags of the page it plays on
+  rule                fixed by what the row is (a clip is not a video, a page or a
+                      document; Audio is a count, below)
+  context             decided per event in phase 2 (download type, Dashboard CD)
+  page_resource       not a pageview; no flags (DEC-Z, DEC-AB)
+  unresolved          no template matches the path: NULL, listed for review,
+                      NEVER defaulted to 0 (CLAUDE.md, Data hygiene 2)
+
+Audio (DEC-AE) is the spec's count: the number of distinct audio clips that play
+on the page. Which clips belong to which page is measured from the log: a clip
+belongs to the page it is played from. Pages that share content (the FHA,
+conventional, VA and ARM versions of one FAQ) share their clips, through the
+template table's content_kind column. Clip rows get Audio 0.
+
+Writes:
   output/path_dictionary_extended.csv          one row per distinct log path
-  output/dictionary_review_for_professor.xlsx  inferred + unresolved rows to confirm
+  output/dictionary_review_for_professor.xlsx  what we coded, for him to confirm
   diagnostics/output/dictionary_inference_report.md
-
-Inference rule (see report for leave-one-out validation):
-  format-scoped flags  {Audio, Video, Personalized} inherit from coded paths of the
-                       same presentation format  (/Module, /Faq, /Slideshow, ...)
-  topic-scoped flags   (all others) inherit from coded paths of the same content
-                       topic slug (budgeting-basics, your-va-fixed-rate-loan, ...)
-  audio clips          inherit from a coded clip with the same CC_{n} id, which is
-                       the clip's identity; the path prefix is only the page it was
-                       played from
-  navigation pages     all content flags set to 0 by rule, provenance 'navigation'
-  no basis             left NULL and routed to the professor review sheet.
-                       NEVER silently defaulted to 0 (CLAUDE.md, Data hygiene #2).
 """
 import re
-import pandas as pd
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-EVENTS = ROOT / "data" / "talkument_userinteractions.xlsx"
-CODING = ROOT / "docs" / "Clickstream_path_frequencies_and_coding_scheme.xlsx"
-OUT = ROOT / "output"
-DIAG = ROOT / "diagnostics" / "output"
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pipeline_common as pc                                     # noqa: E402
+
+OUT, DIAG = pc.OUT, pc.ROOT / "diagnostics" / "output"
 OUT.mkdir(exist_ok=True); DIAG.mkdir(parents=True, exist_ok=True)
+FLAGS = pc.FLAGS
+CLIP_HOST_MIN_SHARE = 0.20   # DEC-AE: a clip belongs to a page kind holding >= this share of its plays
+CLIP_FIXED = {"Download": 0, "Video": 0, "LEDocument": 0, "CDDocument": 0}   # a clip is none of these
+PROFESSOR = {"coded", "coded_same_page", "coded_same_clip"}
 
-FLAGS = ['Personalized','GeneralFinancial','MortgageRelated','ProcessRelated',
- 'BorrowerMortgageProcessRelated','LenderMortgageProcessRelated','LoanTermsRelated',
- 'LoanEstimateRelated','CDRelated','CDDocument','Download','Audio','Video',
- 'Goal_to_inform','Goal_to_Advise']
-FMT_SCOPED = {'Audio', 'Video', 'Personalized'}
-
-# Language flags are deliberately excluded from inheritance: the professor coded
-# English(Y/N)=1 and Spanish(Y/N)=0 on every single row, so the dictionary carries
-# zero language information. Language is emitted separately as `path_language`.
-
-NAV = {'/MyMortgage','/Login','/Login/','/Logout','/Dashboard','/SelectLoan','/Contact',
-       '/About','/Privacy','/Terms','/Glossary','/survey','/'}
-NAV_PREFIX = ('/Login/','/Dashboard/','/AwarenessQuestions')
-NON_PAGEVIEW = {'/favicon.ico','/cart.json'}
-
-# ---------------------------------------------------------------- load
-ev = pd.read_excel(EVENTS, sheet_name="user_usage")
-ev["path"] = ev["path"].astype(str)
-# Ties in event count are broken by path so the row order of every output is
-# reproducible across machines (value_counts leaves tie order undefined).
-vc = ev["path"].value_counts()
-vc = vc.rename_axis("path").reset_index(name="n").sort_values(
-    ["n", "path"], ascending=[False, True], kind="mergesort").set_index("path")["n"]
-N = len(ev)
-
-beta = pd.read_excel(CODING, sheet_name="beta_coding")
-beta["CODING SCHEME"] = beta["CODING SCHEME"].astype(str)
-beta = beta.rename(columns={'English(Y/N)': 'English_raw', 'Spanish (Y/N)': 'Spanish_raw'})
-coded = beta[beta["CODING SCHEME"].str.startswith("/")].drop_duplicates("CODING SCHEME").copy()
-
-# ---------------------------------------------------------------- parse
-def topic_universe(paths):
-    """Topic slugs are the /Module/<slug> names, which name content units directly."""
-    t = {p.split("/", 2)[2] for p in paths
-         if p.startswith("/Module/") and not p.endswith(".mp3") and p.count("/") >= 2}
-    t = {re.sub(r"-\d+$", "", s) for s in t if s}          # fold -1 / -2 variants
-    return sorted({s for s in t if s}, key=len, reverse=True)
-
-TOPICS = topic_universe(set(vc.index) | set(coded["CODING SCHEME"]))
 
 def cc_id(p):
     m = re.search(r"CC_(\d+)\.mp3$", p)
     return m.group(1) if m else None
 
-def parse(p):
-    """-> (format, topic, cc_id)"""
-    if p.endswith(".mp3"):
-        return ("AUDIO", None, cc_id(p))
-    parts = [x for x in p.split("/") if x]
-    if not parts:
-        return ("/(root)", None, None)
-    fmt = "/" + parts[0]
-    rest = "/".join(parts[1:])
-    rest_folded = re.sub(r"-\d+$", "", rest)
-    for t in TOPICS:
-        if rest_folded.startswith(t):
-            return (fmt, t, None)
-    return (fmt, None, None)
 
-parsed = coded["CODING SCHEME"].apply(lambda p: pd.Series(parse(p), index=["fmt","topic","cc"]))
-for c in ("fmt","topic","cc"):
-    coded[c] = parsed[c]
+def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pilot-start", help="override the pilot start date (DEC-AA), YYYY-MM-DD")
+    a = ap.parse_args()
+    if a.pilot_start:
+        pc.PILOT_START = pd.Timestamp(a.pilot_start)
+    pc.check_inputs([pc.EVENTS_FILE, pc.LOAN_FILE, pc.CODING_FILE, pc.TEMPLATE_FILE])
 
-coded_pages = coded[coded.fmt != "AUDIO"]
-coded_audio = coded[coded.fmt == "AUDIO"].drop_duplicates("cc").set_index("cc")
+    ev, info = pc.load_events()
+    N = len(ev)
+    vc = (ev[pc.PATH].value_counts().rename_axis("path").reset_index(name="events")
+            .sort_values(["events", "path"], ascending=[False, True], kind="mergesort"))
+    T = pc.TEMPLATES.set_index("template")
 
-# ---------------------------------------------------------------- inference
-def scope_value(scope_col, key, flag, exclude=None):
-    """Modal coded value of `flag` among coded pages sharing `key` in `scope_col`
-    ('fmt' or 'topic'), optionally holding one path out. -> (value, source path)."""
-    if key is None: return None, None
-    s = coded_pages[(coded_pages[scope_col] == key)]
-    if exclude is not None: s = s[s["CODING SCHEME"] != exclude]
-    v = s[flag].dropna()
-    if not len(v): return None, None
-    src = s.loc[v.index, "CODING SCHEME"].iloc[0]
-    return v.mode().iloc[0], src
+    # ---------------------------------------------------------- the professor's sheet
+    beta = pd.read_excel(pc.CODING_FILE, sheet_name="beta_coding")
+    beta["CODING SCHEME"] = beta["CODING SCHEME"].astype(str)
+    beta = beta[beta["CODING SCHEME"].str.startswith("/")].drop_duplicates("CODING SCHEME")
+    for f in FLAGS + ["Audio"]:
+        if f not in beta:
+            beta[f] = np.nan                       # LEDocument is not in his sheet
+    beta = beta.set_index("CODING SCHEME")
+    prof_page = beta[~beta.index.str.endswith(".mp3")].copy()
+    prof_page["template"] = prof_page.index.map(pc.template_of)
+    prof_clip = beta[beta.index.str.endswith(".mp3")].copy()
+    prof_clip["cc"] = prof_clip.index.map(cc_id)
+    prof_clip = prof_clip.groupby("cc").first()    # one row per clip id
 
-def infer(fmt, topic, flag, exclude=None):
-    if flag in FMT_SCOPED:
-        val, src = scope_value("fmt", fmt, flag, exclude)
-        return val, src, "inferred_format"
-    val, src = scope_value("topic", topic, flag, exclude)
-    return val, src, "inferred_topic"
-
-# ---------------------------------------------------------------- LOO validation
-loo = []
-cp = coded_pages[coded_pages.topic.notna()].reset_index(drop=True)
-for _, row in cp.iterrows():
-    for f in FLAGS:
-        if pd.isna(row[f]): continue
-        pred, _, _ = infer(row.fmt, row.topic, f, exclude=row["CODING SCHEME"])
-        if pred is not None:
-            loo.append((f, int(pred == row[f])))
-loo_df = (pd.DataFrame(loo, columns=["flag","correct"])
-          .groupby("flag")["correct"].agg(["sum","count"]))
-loo_df["accuracy"] = loo_df["sum"] / loo_df["count"]
-
-# ---------------------------------------------------------------- build
-coded_idx = coded.set_index("CODING SCHEME")
-records = []
-for path in vc.index:
-    fmt, topic, cc = parse(path)
-    rec = {"path": path, "events": int(vc[path]), "format": fmt, "topic": topic}
-
-    # language is read off the path, never from the dictionary
-    if "/es/" in path or path.startswith("/translations/es"):
-        rec["path_language"] = "es"
-    elif "/en/" in path or path.startswith("/translations/en"):
-        rec["path_language"] = "en"
-    else:
-        rec["path_language"] = "unknown"
-
-    if path in NON_PAGEVIEW:
-        rec["row_class"] = "non_pageview"
-        for f in FLAGS: rec[f], rec[f+"__prov"] = None, "non_pageview"
-        records.append(rec); continue
-
-    if path in NAV or path.startswith(NAV_PREFIX):
-        rec["row_class"] = "navigation"
-        for f in FLAGS: rec[f], rec[f+"__prov"] = 0, "navigation"
-        records.append(rec); continue
-
-    if path.startswith("/Download/LoanDocument/"):
-        rec["row_class"] = "download_document"
-        for f in FLAGS: rec[f], rec[f+"__prov"] = None, "unresolved_download_type"
-        rec["Download"], rec["Download__prov"] = 1, "rule_download_path"
-        records.append(rec); continue
-
-    if path.startswith("/download/samples/"):
-        rec["row_class"] = "download_sample"
-        for f in FLAGS: rec[f], rec[f+"__prov"] = None, "unresolved"
-        rec["Download"], rec["Download__prov"] = 1, "rule_download_path"
-        records.append(rec); continue
-
-    exact = coded_idx.loc[path] if path in coded_idx.index else None
-    src_audio = coded_audio.loc[cc] if (cc is not None and cc in coded_audio.index) else None
-    rec["row_class"] = ("coded" if exact is not None
-                        else "audio_clip" if cc is not None
-                        else "content_page")
-
-    for f in FLAGS:
-        if exact is not None and not pd.isna(exact[f]):
-            rec[f], rec[f+"__prov"] = exact[f], "coded"
-        elif src_audio is not None and not pd.isna(src_audio[f]):
-            rec[f], rec[f+"__prov"] = src_audio[f], "inferred_audio_cc"
-            rec.setdefault("inference_source", src_audio["CODING SCHEME"])
-        else:
-            val, src, kind = infer(fmt, topic, f)
-            if val is not None:
-                rec[f], rec[f+"__prov"] = val, kind
-                rec["inference_source"] = src
+    # ---------------------------------------------------------- page cells
+    def page_cells(path, tpl):
+        """flag -> (value, prov) for a page path."""
+        row = T.loc[tpl]
+        same = prof_page[prof_page.template == tpl]
+        out = {}
+        for f in FLAGS:
+            if path in beta.index and pd.notna(beta.at[path, f]):
+                out[f] = (float(beta.at[path, f]), "coded")
+                continue
+            v = same[f].dropna()
+            if len(v) and v.nunique() == 1:
+                out[f] = (float(v.iloc[0]), "coded_same_page")
+                continue
+            ours = row[f]
+            if ours == "context":
+                out[f] = (np.nan, "context")
+            elif ours == "":
+                out[f] = (np.nan, "page_resource" if row.page_group == "page_resource"
+                          else "unresolved")
             else:
-                rec[f], rec[f+"__prov"] = None, "unresolved"
-    records.append(rec)
+                out[f] = (float(ours), "navigation" if row.page_group == "navigation"
+                          else "coded_by_us")
+        return out
 
-d = pd.DataFrame(records)
-d = d[["path","events","row_class","format","topic","path_language","inference_source"]
-      + [c for f in FLAGS for c in (f, f+"__prov")]]
-d.to_csv(OUT / "path_dictionary_extended.csv", index=False)
+    # ---------------------------------------------------------- clip -> page (DEC-AE)
+    # A clip's page is the most recent real page in the same session. Downloads,
+    # page resources and other clips are skipped; navigation pages cannot host.
+    is_mp3 = ev[pc.PATH].str.endswith(".mp3")
+    tpl_ev = ev[pc.PATH].map(lambda p: None if p.endswith(".mp3") else pc.template_of(p))
+    group = tpl_ev.map(T.page_group)
+    can_host = group.isin(["own_loan", "mortgage_process", "money_skills"]) & \
+        ~ev[pc.PATH].str.startswith(pc.DOWNLOAD_PREFIX)
+    _, sid = pc.session_ids(ev[pc.USER], ev[pc.TIME], pc.SESSION_TIMEOUT_MIN * 60)
+    is_page = ~is_mp3 & group.ne("page_resource") & ~ev[pc.PATH].str.startswith(
+        (pc.DOWNLOAD_PREFIX, "/download/"))
+    host_i = pc.last_page_index(is_page, [ev[pc.USER], sid])
+    host_tpl = pd.Series(np.nan, index=ev.index, dtype=object)
+    ok = is_mp3 & host_i.notna()
+    host_tpl[ok] = tpl_ev.reindex(host_i[ok].astype(int)).values
+    host_tpl[ok] = host_tpl[ok].where(can_host.reindex(host_i[ok].astype(int)).values)
+    plays = pd.DataFrame({"cc": ev[pc.PATH][is_mp3].map(cc_id), "host": host_tpl[is_mp3]})
+    plays["kind"] = plays.host.map(T.content_kind)
+    by_kind = plays.dropna(subset=["kind"]).groupby(["cc", "kind"]).size().rename("plays").reset_index()
+    by_kind["share"] = by_kind.plays / plays.groupby("cc").size().reindex(by_kind.cc).values
+    clip_kinds = by_kind[by_kind.share >= CLIP_HOST_MIN_SHARE]
+    audio_per_kind = clip_kinds.groupby("kind").cc.nunique()
+    primary_host = (plays.dropna(subset=["host"]).groupby(["cc", "host"]).size()
+                         .rename("n").reset_index()
+                         .sort_values(["cc", "n", "host"], ascending=[True, False, True])
+                         .drop_duplicates("cc").set_index("cc").host)
 
-# ---------------------------------------------------------------- report
-L = []
-def w(s=""): L.append(s)
+    # ---------------------------------------------------------- build every path
+    records = []
+    for path, n in zip(vc.path, vc.events):
+        rec = {"path": path, "events": int(n)}
+        if path.endswith(".mp3"):
+            cc = cc_id(path)
+            host = primary_host.get(cc)
+            rec.update(row_class="audio_clip", template=None, clip_id=cc, clip_page=host,
+                       content_kind=T.content_kind.get(host) if host else None)
+            hostcells = page_cells(host, host) if host else {}
+            for f in FLAGS:
+                if f in CLIP_FIXED:
+                    v, p = CLIP_FIXED[f], "rule"
+                elif path in beta.index and pd.notna(beta.at[path, f]):
+                    v, p = float(beta.at[path, f]), "coded"
+                elif cc in prof_clip.index and pd.notna(prof_clip.at[cc, f]):
+                    v, p = float(prof_clip.at[cc, f]), "coded_same_clip"
+                elif host and pd.notna(hostcells[f][0]):
+                    v, p = hostcells[f][0], "clip_from_page"
+                else:
+                    v, p = np.nan, "unresolved"
+                rec[f], rec[f + "__prov"] = v, p
+            rec["Audio"], rec["Audio__prov"] = 0, "rule"
+            rec["Audio_professor"] = (beta.at[path, "Audio"] if path in beta.index
+                                      else prof_clip.Audio.get(cc, np.nan))
+            records.append(rec)
+            continue
 
-w("# Extended Path Dictionary — build & validation report")
-w()
-w("Script: `diagnostics/build_path_dictionary.py`. Sources unmodified.")
-w()
-w("## 1. Leave-one-out validation of the inference rule")
-w()
-w("Each coded page row is held out and predicted from the remaining coded rows.")
-w("A flag with no non-null value anywhere in its scope is not predicted and not counted —")
-w("it is reported as unresolved instead of being scored as a free win.")
-w()
-w("| flag | scope | correct | tested | accuracy |")
-w("|---|---|---|---|---|")
-for f in FLAGS:
-    if f in loo_df.index:
-        r = loo_df.loc[f]
-        w("| `{}` | {} | {} | {} | {:.1%} |".format(
-            f, "format" if f in FMT_SCOPED else "topic", int(r["sum"]), int(r["count"]), r["accuracy"]))
-    else:
-        w("| `{}` | {} | — | 0 | not predictable (no coded values in scope) |".format(
-            f, "format" if f in FMT_SCOPED else "topic"))
-w()
-if loo_df["count"].sum():
-    w("**Overall: {:.1%}** ({} of {} held-out cells).".format(
-        loo_df["sum"].sum()/loo_df["count"].sum(), int(loo_df["sum"].sum()), int(loo_df["count"].sum())))
-w()
+        tpl = pc.template_of(path)
+        if tpl is None:
+            rec.update(row_class="unmapped", template=None)
+            for f in FLAGS + ["Audio"]:
+                rec[f], rec[f + "__prov"] = np.nan, "unresolved"
+            records.append(rec)
+            continue
+        row = T.loc[tpl]
+        rec.update(row_class=row.page_group, template=tpl, content_kind=row.content_kind)
+        for f, (v, p) in page_cells(path, tpl).items():
+            rec[f], rec[f + "__prov"] = v, p
+        if row.page_group == "page_resource":
+            rec["Audio"], rec["Audio__prov"] = np.nan, "page_resource"
+        else:
+            rec["Audio"] = int(audio_per_kind.get(row.content_kind, 0))
+            rec["Audio__prov"] = "rule"
+        rec["Audio_professor"] = beta.Audio.get(path, np.nan)
+        records.append(rec)
 
-w("## 2. Path rows by class")
-w()
-cls = d.groupby("row_class").agg(paths=("path","size"), events=("events","sum")).sort_values("events", ascending=False)
-w("| class | distinct paths | events | % of log |")
-w("|---|---|---|---|")
-for k, r in cls.iterrows():
-    w("| {} | {:,} | {:,} | {:.2%} |".format(k, r.paths, r.events, r.events/N))
-w("| **total** | **{:,}** | **{:,}** | 100% |".format(cls.paths.sum(), cls.events.sum()))
-w()
+    d = pd.DataFrame(records)
+    front = ["path", "events", "row_class", "template", "content_kind", "clip_id", "clip_page"]
+    for c in front:
+        if c not in d:
+            d[c] = None
+    d = d[front + [c for f in FLAGS + ["Audio"] for c in (f, f + "__prov")] + ["Audio_professor"]]
+    d.to_csv(pc.DICTIONARY_FILE, index=False)
 
-w("## 3. Event coverage per flag, before vs after")
-w()
-w("'Covered' = the event's path carries a non-null value for that flag.")
-w()
-w("| flag | before (coded only) | after (coded + inferred + rule) | change |")
-w("|---|---|---|---|")
-ev_j = ev.join(d.set_index("path"), on="path")
-ev_b = ev.join(coded_idx[FLAGS], on="path", rsuffix="_b")
-for f in FLAGS:
-    bef = ev_b[f].notna().sum() / N
-    aft = ev_j[f].notna().sum() / N
-    w("| `{}` | {:.1%} | {:.1%} | {:+.1f} pp |".format(f, bef, aft, 100*(aft-bef)))
-w()
+    # ---------------------------------------------------------- checks
+    # FAILS IF our template table contradicts a cell the professor coded on that
+    # page: the table should only ever fill his blanks.
+    clash = []
+    for path, r in prof_page.iterrows():
+        if r.template is None or r.template not in T.index:
+            continue
+        for f in FLAGS:
+            ours = T.at[r.template, f]
+            if pd.notna(r[f]) and ours not in ("", "context") and float(ours) != float(r[f]):
+                clash.append((path, f, r[f], ours))
+    clash = pd.DataFrame(clash, columns=["path", "flag", "professor", "template_table"])
+    # FAILS IF a professor-coded cell did not reach the dictionary unchanged
+    lost = 0
+    dd = d.set_index("path")
+    for path in beta.index.intersection(dd.index):
+        for f in FLAGS:
+            if pd.notna(beta.at[path, f]) and not (dd.at[path, f + "__prov"] == "coded"
+                                                    and dd.at[path, f] == beta.at[path, f]):
+                if not (dd.at[path, "row_class"] == "audio_clip" and f in CLIP_FIXED):
+                    lost += 1
 
-w("## 4. Rows needing the professor")
-w()
-unres = d[d[[f+"__prov" for f in FLAGS]].eq("unresolved").any(axis=1)]
-w("- paths with at least one unresolved flag: **{:,}** ({:,} events, {:.2%} of log)".format(
-    len(unres), int(unres.events.sum()), unres.events.sum()/N))
-inf = d[d[[f+"__prov" for f in FLAGS]].isin(["inferred_topic","inferred_format","inferred_audio_cc"]).any(axis=1)]
-w("- paths carrying at least one inferred flag: **{:,}** ({:,} events, {:.2%} of log)".format(
-    len(inf), int(inf.events.sum()), inf.events.sum()/N))
-w()
-TOPIC_SCOPED = [f for f in FLAGS if f not in FMT_SCOPED]
-d["n_unresolved_topic_flags"] = d[[f+"__prov" for f in TOPIC_SCOPED]].eq("unresolved").sum(axis=1)
+    # ---------------------------------------------------------- report
+    ev_j = ev[[pc.PATH]].join(d.set_index("path"), on=pc.PATH)
+    pv = ev_j[ev_j.row_class != "page_resource"]
+    L = ["# Path dictionary — build report", "",
+         f"Script `diagnostics/build_path_dictionary.py`. Pilot start {info['pilot_start'].date()} "
+         f"(DEC-AA): {len(info['test_users'])} test user(s) and {info['test_events']:,} events "
+         f"removed before anything else; {N:,} events and {ev[pc.USER].nunique():,} users remain.", "",
+         "## 1. Where every cell comes from (share of pageviews)", "",
+         "Page resources (language files, browser assets) are not pageviews and are excluded.",
+         "`context` cells are filled per event in phase 2; `unresolved` stays NULL.", "",
+         "| flag | professor | coded by us | navigation rule | clip from page | rule | context | unresolved |",
+         "|---|---|---|---|---|---|---|---|"]
+    for f in FLAGS + ["Audio"]:
+        s = pv[f + "__prov"].value_counts(normalize=True)
+        prof = sum(s.get(k, 0) for k in PROFESSOR)
+        L.append(f"| `{f}` | {prof:.1%} | {s.get('coded_by_us', 0):.1%} | {s.get('navigation', 0):.1%} | "
+                 f"{s.get('clip_from_page', 0):.1%} | {s.get('rule', 0):.1%} | {s.get('context', 0):.1%} | "
+                 f"{s.get('unresolved', 0):.1%} |")
+    L += ["", "## 2. Checks", "",
+          f"- template table cells contradicting a professor-coded cell on the same page: "
+          f"**{len(clash)}** ({'PASS' if clash.empty else 'FAIL'})",
+          f"- professor-coded cells that did not reach the dictionary unchanged (excluding the "
+          f"fixed clip rules below): **{lost}** ({'PASS' if lost == 0 else 'FAIL'})",
+          f"- paths matching no template (NULL, for review): "
+          f"**{int((d.row_class == 'unmapped').sum())}** paths, "
+          f"{int(d.events[d.row_class == 'unmapped'].sum()):,} events",
+          f"- audio clips with no page they are ever played from: "
+          f"{int(d[(d.row_class == 'audio_clip') & d.clip_page.isna()].shape[0])}", "",
+          "Deliberate departures from the professor's sheet (DEC-AE): `Audio` is the count of "
+          "clips on a page, not his 0/1, and an audio clip row is Audio 0, Video 0, Download 0. "
+          "His original Audio value is kept in `Audio_professor`.", "",
+          "## 3. Audio clips per page kind (DEC-AE)", "",
+          f"A clip belongs to a page kind holding at least {CLIP_HOST_MIN_SHARE:.0%} of its plays.", "",
+          "| page kind | clips | clip ids |", "|---|---|---|"]
+    for k, g in clip_kinds.groupby("kind"):
+        ids = sorted(g.cc.astype(int))
+        L.append(f"| {k} | {len(ids)} | {', '.join(f'CC_{i}' for i in ids)} |")
+    (DIAG / "dictionary_inference_report.md").write_text("\n".join(L) + "\n")
 
-w("### 4a. Content pages the professor still needs to code")
-w()
-w("Content pages where topic-scoped flags could not be inferred because **no coded page")
-w("shares their topic**. Ranked by event volume — this is the whole list, and coding the")
-w("top few closes most of the remaining gap.")
-w()
-orphan = d[(d.row_class == "content_page") & (d.n_unresolved_topic_flags > 0)] \
-           .sort_values(["events", "path"], ascending=[False, True], kind="mergesort")
-w("| events | % of log | path | topic | unresolved flags |")
-w("|---|---|---|---|---|")
-for _, r in orphan.iterrows():
-    w("| {:,} | {:.2%} | `{}` | {} | {}/{} |".format(
-        r.events, r.events/N, r.path, r.topic or "—", int(r.n_unresolved_topic_flags), len(TOPIC_SCOPED)))
-w()
-w("Total: **{:,} paths, {:,} events ({:.2%} of the log)**.".format(
-    len(orphan), int(orphan.events.sum()), orphan.events.sum()/N))
-w()
+    # ---------------------------------------------------------- review workbook
+    tp = (d.groupby("template", dropna=True).events.sum())
+    ours = pc.TEMPLATES.copy()
+    ours.insert(3, "events", ours.template.map(tp).fillna(0).astype(int))
+    ours.insert(4, "Audio_clips", ours.content_kind.map(audio_per_kind).fillna(0).astype(int))
+    for f in FLAGS:                                 # mark which cells are the professor's
+        pr = prof_page.groupby("template")[f].agg(lambda s: s.dropna().iloc[0] if s.notna().any() else np.nan)
+        ours[f] = [f"{v} (professor)" if pd.notna(pr.get(t, np.nan)) else v
+                   for t, v in zip(ours.template, ours[f])]
+    unm = d[d.row_class == "unmapped"][["path", "events"]]
+    clips = d[d.row_class == "audio_clip"][["path", "events", "clip_id", "clip_page"] +
+                                           [c for f in FLAGS for c in (f, f + "__prov")]]
+    with pd.ExcelWriter(OUT / "dictionary_review_for_professor.xlsx", engine="openpyxl") as xl:
+        pd.DataFrame({"Read me": [
+            "Every page template and how each flag was set. A value marked '(professor)' is yours; "
+            "every other value was coded by us from the page's content, following your pattern, and "
+            "is open to your correction in docs/page_template_coding.csv.",
+            "'context' means the value is set per event: a borrower's document downloads by their "
+            "type, and the Dashboard's CD flags once the borrower has a Closing Disclosure.",
+            "Audio_clips is the number of distinct audio clips that play on that kind of page "
+            "(Audio, as your coding_dictionary defines it).",
+            "Unmapped_paths lists any path no template covers; those stay blank in the data."]}
+        ).to_excel(xl, sheet_name="Read me", index=False)
+        ours.to_excel(xl, sheet_name="Page_templates", index=False)
+        clips.to_excel(xl, sheet_name="Audio_clips", index=False)
+        clash.to_excel(xl, sheet_name="Conflicts_with_professor", index=False)
+        unm.to_excel(xl, sheet_name="Unmapped_paths", index=False)
+        from openpyxl.styles import Alignment, Font
+        for ws in xl.sheets.values():                  # readable without resizing by hand
+            ws.freeze_panes = "B2"
+            for c in ws[1]:
+                c.font = Font(bold=True)
+            for col in ws.columns:
+                letter = col[0].column_letter
+                longest = max(len(str(c.value)) if c.value is not None else 0 for c in col)
+                ws.column_dimensions[letter].width = min(max(10, longest + 2), 60)
+                for c in col[1:]:
+                    c.alignment = Alignment(vertical="top", wrap_text=longest > 60)
+        xl.sheets["Read me"].column_dimensions["A"].width = 120
 
-w("### 4b. Flags no page row can ever receive")
-w()
-w("These are blank on every coded page row in `beta_coding`, so there is nothing to")
-w("inherit. Their apparent coverage below comes only from navigation pages (set to 0 by")
-w("rule) and audio clips — **no content page carries a value**.")
-w()
-w("| flag | coded page rows with a value | content-page coverage after inference |")
-w("|---|---|---|")
-ev_pages = ev_j[ev_j.row_class.isin(["coded","content_page"])]
-for f in TOPIC_SCOPED:
-    n_coded = int(coded_pages[f].notna().sum())
-    cov = ev_pages[f].notna().sum() / max(len(ev_pages), 1)
-    if n_coded == 0:
-        w("| `{}` | **0 of {}** | {:.1%} |".format(f, len(coded_pages), cov))
-w()
+    print("\n".join(L[:6]))
+    print(d.row_class.value_counts().to_string())
+    print(f"template conflicts {len(clash)}  lost professor cells {lost}  "
+          f"unmapped paths {int((d.row_class == 'unmapped').sum())}")
 
-(DIAG / "dictionary_inference_report.md").write_text("\n".join(L))
 
-# ---------------------------------------------------------------- review workbook
-with pd.ExcelWriter(OUT / "dictionary_review_for_professor.xlsx", engine="openpyxl") as xl:
-    cls.reset_index().to_excel(xl, sheet_name="Summary", index=False)
-    loo_df.reset_index().to_excel(xl, sheet_name="Rule_validation", index=False)
-    cols = ["path","events","row_class","format","topic","inference_source"] + \
-           [c for f in FLAGS for c in (f, f+"__prov")]
-    inf_pages = inf[inf.row_class != "audio_clip"][cols].sort_values(
-        ["events", "path"], ascending=[False, True], kind="mergesort")
-    inf_pages.to_excel(xl, sheet_name="Inferred_pages", index=False)
-    inf[inf.row_class == "audio_clip"][cols].sort_values(
-        ["events", "path"], ascending=[False, True], kind="mergesort") \
-        .to_excel(xl, sheet_name="Inferred_audio", index=False)
-    orphan[cols].to_excel(xl, sheet_name="Needs_coding", index=False)
-
-print("distinct paths:", len(d))
-print(cls.to_string())
-print("\nWROTE output/path_dictionary_extended.csv")
-print("WROTE output/dictionary_review_for_professor.xlsx")
-print("WROTE diagnostics/output/dictionary_inference_report.md")
+if __name__ == "__main__":
+    main()
