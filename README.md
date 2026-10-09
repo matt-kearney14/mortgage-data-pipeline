@@ -1,31 +1,54 @@
 # Mortgage Clickstream Pipeline
 
-Transforms raw Talkument clickstream logs into a **user-level behavioral dataset**
-— one row per borrower, every variable in the specification as a column — for
-analysis of how mortgage borrowers engage with disclosure and education content.
+Transforms the raw Talkument clickstream log into a **user-level behavioural
+dataset**: one row per borrower, with every variable in the specification as a
+column. The dataset supports research on how mortgage borrowers engage with
+disclosure and education content.
 
-> **Rewritten 2026-09-14.** The previous README described an inherited pipeline
-> whose output contained fabricated zeros, four identically-empty columns, and a
-> static language rule the specification does not describe. It also referenced
-> `03_final_merge.py`, which does not exist. None of that is accurate any more.
+> **Reconciled 2026-10-01 by an independent audit** (`docs/AUDIT_REPORT_2026-10-01.md`),
+> **and brought to full coverage 2026-10-08** (DEC-AA to DEC-AF). Every figure below
+> was recomputed from `data/` by `diagnostics/audit_recompute.py`, which re-implements
+> the pipeline independently and agrees with it on every cell. Where a figure is
+> generated in each run, this README points to that output rather than copying it.
 
 ---
 
 ## The deliverable
 
-`output/user_level_dataset.xlsx` — regenerated on every run, with two sheets:
+`output/user_level_dataset.xlsx` is regenerated on every run. It has three sheets:
 
 | sheet | contents |
 |---|---|
-| **User Data** | 10,140 users × 81 columns, one row per borrower. Filters on, header frozen. |
-| **Data Dictionary** | every column explained — definition, how to read it, and for anything not yet computable, exactly what input is needed. Blocked columns sort to the top. |
+| **Read Me First** | The caveats that could change a conclusion. Every figure in it is computed in the run that wrote it. |
+| **User Data** | 10,138 borrowers × 106 columns, one row per borrower. Filters are on and the header is frozen. |
+| **Data Dictionary** | One row per column: the definition, how to read it, its coverage, and the decision behind it. |
 
-`output/codebook.csv` is the same dictionary in machine-readable form.
+`output/codebook.csv` holds the same dictionary in machine-readable form.
+`output/user_level_dataset.parquet` holds the same data.
 
-Thirteen columns are present but deliberately all-NULL — the four download
-characteristics and five milestone timers — because the source data for them does
-not exist yet. Keeping them stabilises the schema; the codebook states why each
-is empty.
+All of the specification's 42 variables are built. At the pageview level every
+page characteristic has a value except where a document download's type cannot be
+determined (0.3% of pageviews, counted in `downloads_type_unknown`).
+
+- **Where each value comes from.** The professor's coding always wins. Where he
+  left a cell blank it is coded from the page's content in
+  `docs/page_template_coding.csv` and labelled `coded_by_us` (DEC-AD); every cell
+  carries its source in a `__prov` column. His corrections are an edit to that
+  file and a re-run.
+- **Decided per event** (DEC-AC): a download's document type (from the page it was
+  clicked from, then the same document elsewhere, then document number order), and
+  the Dashboard's CD flags (1 once the borrower has a Closing Disclosure).
+- **Documented deviations:** `Audio` counts the clips that play on a page (DEC-AE);
+  `webpages_visited` excludes browser assets and the language files a page loads
+  (DEC-P, DEC-Z, DEC-AB); `ProcessRelated` keeps the professor's provisional values
+  (DEC-E); pre-pilot test accounts are removed (DEC-AA).
+- **Blank by design** (DEC-AF): time on the last page of a session, and milestone
+  timers whose date does not exist; `milestone_blank_reason` says which and why.
+
+The loan extract `data/loan_application_data_partial.csv` supplies loan outcomes
+and all four milestone dates (application, LE/TIL sent, lock, current status). It
+covers 25,318 of the 27,650 pilot loans. Coverage is **not** even across buckets:
+13.6% of bucket-1 loans are missing, against 5.9% of buckets 2 and 3.
 
 ---
 
@@ -35,40 +58,52 @@ is empty.
 python3 diagnostics/build_path_dictionary.py   # path -> characteristics + provenance
 python3 clickstream_processor.py --compare     # event grain, URL characteristics
 python3 phase2_user_dataset.py                 # sessions, aggregates, user table
+python3 diagnostics/audit_recompute.py         # optional: independent check of the result
+python3 diagnostics/build_coverage_sheet.py    # optional: Coding_Dictionary_Coverage.xlsx
 ```
 
-Requires `pandas`, `openpyxl`, `pyarrow`. Each stage reads the previous stage's
-output from `output/` and writes QA alongside it.
+Requires `pandas`, `openpyxl` and `pyarrow` (`scipy` and `tabulate` for the
+diagnostics). Each stage reads the previous stage's output from `output/`.
 
-Anything a professor might reasonably want changed is a flag, not an edit:
+**New data.** The pipeline names no user, loan or count, so a new extract runs
+unchanged if it keeps the five file names in `data/`, their sheet names
+(`user_usage`, `users`, `loan_applicants`, `pilot_record`) and column names, and the
+loan extract's date formats. Each stage checks this first and stops with a
+plain-language list of anything missing. A page the app adds later matches no row
+of `docs/page_template_coding.csv`: it stays blank, is counted, and is listed in
+the review workbook's `Unmapped_paths` sheet — never silently set to 0.
 
-| flag | effect |
-|---|---|
-| `--session-timeout 60` | re-sessionize at a different inactivity threshold |
-| `--unresolved-fill 0` | fill unresolved characteristics with 0 instead of NULL |
-| `--lang-asset-paths` | also switch language state on `/es/` or `/en/` asset paths |
-| `--compare` | write a before/after against the inherited implementation |
+Changing an assumption is a re-run with a flag, not an edit:
+
+| flag | script | effect |
+|---|---|---|
+| `--session-timeout 60` | phase2 | re-sessionize at a different inactivity threshold (DEC-N) |
+| `--keep-translation-resources` | phase2 | count the `/translations/*` language files as pageviews again (pre-audit behaviour, DEC-Z) |
+| `--no-excel` | phase2 | skip the workbook |
+| `--pilot-start YYYY-MM-DD` | dictionary, phase1 | override the date before which accounts are treated as testers (DEC-AA); pass to both |
+| `--compare` | phase1 | write a before/after against the inherited implementation |
+| `--excel` | phase1 | also write the event-grain table as .xlsx (slow) |
+
+To change how a page is coded, edit its row in `docs/page_template_coding.csv`.
 
 ---
 
 ## Reading the output safely
 
-Three properties of the dataset that are easy to misread.
+The Read Me First sheet is the authoritative list. In brief:
 
-**`pages_X` counts confirmed 1s only.** Each ships beside `unknown_X`, the count
-of the user's pageviews where that characteristic could not be determined. A low
-`pages_X` can mean "didn't read that" or "we couldn't classify those pages" —
-`unknown_X` is how you tell. `pages_unattributable` and `pct_pages_classified`
-give the same picture overall; the median user is 95.8% classified.
-
-**The `time_X` columns overlap and must not be summed.** A page carrying several
-characteristics is counted in each, so the columns total about 1.41× real time.
-`total_time_observed` is the only valid denominator.
-
-**`provided_language` is not a pre-treatment covariate.** It reads `es` for 280
-users in pilot bucket 3 and 0 in bucket 2 — it encodes the treatment bucket, not the
-borrower. Use `language_preference` from the applicant file, which is balanced
-across buckets.
+- **`pages_X` counts confirmed cases only.** Each one sits beside `unknown_X`, and
+  for the two download types beside `downloads_type_unknown`. The three
+  `downloads_typed_by_*` columns say what evidence typed each borrower's downloads.
+- **The `time_X` columns overlap and must not be summed.** A page can carry several
+  characteristics. Use `total_time_observed` as the denominator. `time_X` is
+  observed dwell only: the last page of each session contributes 0.
+- **`provided_language` is not a pre-treatment covariate.** It reads `es` only in
+  bucket 3. Use `language_preference` per person, or `borrower_language` per loan.
+- **This file is per person, not per loan.** Aggregate to the loan before comparing
+  with the paper's loan-level tables.
+- **Milestone dates are calendar dates, not timestamps.** A milestone that falls on
+  the same day as activation has an undetermined sign.
 
 ---
 
@@ -76,31 +111,30 @@ across buckets.
 
 | | |
 |---|---|
-| Events / users / distinct paths | 337,581 / 10,140 / 9,471 |
-| Paths coded by the professor | 103 |
-| Event coverage from those alone | 36.6% |
-| After sibling inference (DEC-G) | 68–89% depending on characteristic |
-| Inference accuracy, leave-one-out | 90.9% (169 of 186 held-out cells) |
-| Sessions at a 30-minute timeout | 34,436 |
+| Events / users / distinct paths in the log | 337,581 / 10,140 / 9,471 |
+| Pre-pilot test accounts removed (DEC-AA) | 2 users, 433 events |
+| Pageviews after dropping browser assets and language files | 312,983 |
+| Page templates in `docs/page_template_coding.csv` | 70 (every path in the log matches one) |
+| Pageviews with every characteristic known | 99.7% (the rest: downloads of undeterminable type) |
+| Document downloads typed (DEC-AC) | see `output/qa_phase2.md` §4b |
+| Sessions at a 30-minute timeout | see `output/session_timeout_sensitivity.csv` |
 
-Every value carries a provenance stamp. Filtering to `__prov == 'coded'` returns
-the professor's original 103 paths exactly, so no analysis is locked into the
-inference.
+Every dictionary value carries a provenance stamp in a `__prov` column. Filtering
+to `__prov == 'coded'` reproduces `beta_coding` cell for cell, and `coded_by_us`
+reproduces the template table cell for cell (`diagnostics/audit_recompute.py`).
 
 ---
 
-## Known blockers
+## Still open
 
-Nine of the 42 variables cannot be built from the files in `data/`:
-
-1. **A LoanDocument-id → document-type lookup.** Every download path is
-   `/Download/LoanDocument/{numeric id}` with no type token; the inherited
-   regexes matched 0 of 337,581 rows. Blocks 4 variables.
-2. **A real milestone-date source.** `talkument_loan_applicants.xlsx` contains
-   no `Application_Date`, `LE_TIL_Sent_Date`, `Lock_Date` or
-   `Current_Status_Date` despite earlier documentation saying so. Blocks 5.
-3. **Coding for 28 content paths across 6 topics** — not blocking, but worth
-   8.45% of events. Prepared in `output/dictionary_review_for_professor.xlsx`.
+1. **The professor's confirmation of the cells coded by us** and his answers to
+   `docs/Professor_Questions.md` (ProcessRelated's `????`, two GeneralFinancial
+   exceptions, Audio on the module pages, and the rest). Page by page in
+   `output/dictionary_review_for_professor.xlsx`.
+2. **The rest of the loan extract.** The 2,332 missing pilot loans are concentrated
+   in bucket 1.
+3. **Optional: a LoanDocument-id → document-type lookup**, which would replace the
+   typing evidence for downloads with a measured type.
 
 ---
 
@@ -108,14 +142,16 @@ Nine of the 42 variables cannot be built from the files in `data/`:
 
 | File | Role |
 |---|---|
-| `CLAUDE.md` | Working rules, canonical column names, data hygiene |
-| `docs/Clickstream_Variable_Specification_v2.md` | Canonical variable definitions |
-| `docs/Project_Brief.md` | Status, defects, open decisions |
-| `docs/DECISIONS.md` | Every provisional choice — ID, rationale, evidence, reversal cost |
-| `docs/Phase2_Plan.md` | Sessionization and attribution design |
-| `user_level_dataset.xlsx` → Data Dictionary | Every output column explained, generated from code |
-| `output/codebook.csv` | The same, machine-readable |
+| `CLAUDE.md` | Working rules, canonical column names, data hygiene, source-of-truth order |
+| `docs/Clickstream_Variable_Specification_v2.md` | Canonical variable definitions, with audit notes where the data contradicts it |
+| `docs/Project_Brief.md` | Status, inputs and open decisions |
+| `docs/DECISIONS.md` | Append-only log of every provisional choice |
+| `docs/page_template_coding.csv` | Every page template's coding: the professor's blanks filled, with a rationale per row |
+| `docs/Professor_Questions.md` | What the professor is asked to confirm or decide |
+| `docs/Phase2_Plan.md` | Historical: the Phase 2 design as proposed, and how the implementation differs |
+| `docs/AUDIT_REPORT_2026-10-01.md` | Independent audit: what was wrong, what changed, what is still open |
+| `user_level_dataset.xlsx` → Data Dictionary | Every output column, generated from code |
 
-Reference variables **by name, never by number** — three incompatible numbering
-schemes exist across the professor's sheet, the v2 spec, and this repository's
+Refer to variables **by name, never by number**. Three incompatible numbering
+schemes exist across the professor's sheet, the v2 spec and this repository's
 history.

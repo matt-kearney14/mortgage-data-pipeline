@@ -1,0 +1,71 @@
+template,page_group,content_kind,Personalized,GeneralFinancial,MortgageRelated,ProcessRelated,BorrowerMortgageProcessRelated,LenderMortgageProcessRelated,LoanTermsRelated,LoanEstimateRelated,CDRelated,LEDocument,CDDocument,Download,Video,Goal_to_inform,Goal_to_Advise,rationale
+/Module/your-loan-estimate-made-clear,own_loan,le_module,1,0,1,1,1,0,1,1,1,1,0,1,1,1,0,The borrower's own Loan Estimate shown interactively. Professor coded all but LoanTermsRelated (the LE's Loan Terms section is on this page) and the document flags.
+/Module/closing-disclosure-made-clear,own_loan,cd_module,1,0,1,0,1,0,1,0,1,0,1,1,1,1,0,The borrower's own Closing Disclosure. Borrower/Lender and the goals follow the Loan Estimate page (agreed rule: the CD page follows the LE page).
+/Dashboard,own_loan,dashboard,1,0,1,1,1,0,1,1,context,1,context,1,0,1,0,"The borrower's loan dashboard: shows their Loan Estimate and lists their documents for download. CDRelated and CDDocument are 1 only once the borrower has CD evidence (a CD page view or CD download), set per event in phase 2."
+/Slideshow/your-fha-fixed-rate-loan-loan-payments,own_loan,loan_payments,1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,Walks through the borrower's own payment figures (professor: Personalized). About the loan's terms rather than a process step.
+/Slideshow/your-conventional-fixed-loan-loan-payments,own_loan,loan_payments,1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,As the FHA loan-payments slideshow.
+/Slideshow/your-va-fixed-rate-loan-loan-payments,own_loan,loan_payments,1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,As the FHA loan-payments slideshow.
+/Slideshow/your-conventional-arm-loan-rate-changes,own_loan,arm_rate_changes,1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,The ARM counterpart of the loan-payments slideshow: how the borrower's rate and payment can change.
+/Infographic/your-conventional-arm-loan-your-loan-key-details,own_loan,loan_key_details,1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,"""Your loan key details"": the borrower's own loan terms."
+/Module/your-fha-fixed-rate-loan,mortgage_process,loan_type_module,0,0,1,1,1,0,1,0,0,0,0,0,1,1,0,"Explains the borrower's loan product (rate type, term, escrow, insurance). Professor coded it ProcessRelated; Borrower-process because it covers what the borrower pays and must keep up."
+/Module/your-conventional-fixed-loan,mortgage_process,loan_type_module,0,0,1,1,1,0,1,0,0,0,0,0,1,1,0,As the FHA loan-type module.
+/Module/your-va-fixed-rate-loan,mortgage_process,loan_type_module,0,0,1,1,1,0,1,0,0,0,0,0,1,1,0,As the FHA loan-type module.
+/Module/your-conventional-arm-loan,mortgage_process,loan_type_module,0,0,1,1,1,0,1,0,0,0,0,0,1,1,0,As the FHA loan-type module.
+/Faq/your-fha-fixed-rate-loan-taxes-and-insurance-faqs,mortgage_process,taxes_insurance_faq,0,0,1,1,1,0,0,0,0,0,0,0,0,1,0,"Escrow, property tax and homeowner's insurance: costs the borrower carries. Not Loan Terms (the LE's Loan Terms section is rate, amount, P&I, prepayment, balloon)."
+/Faq/your-conventional-fixed-loan-taxes-and-insurance-faqs,mortgage_process,taxes_insurance_faq,0,0,1,1,1,0,0,0,0,0,0,0,0,1,0,As the FHA taxes-and-insurance FAQ (same audio clips).
+/Faq/your-va-fixed-rate-loan-taxes-and-insurance-faqs,mortgage_process,taxes_insurance_faq,0,0,1,1,1,0,0,0,0,0,0,0,0,1,0,As the FHA taxes-and-insurance FAQ (same audio clips).
+/Faq/your-conventional-arm-loan-taxes-and-insurance-faqs,mortgage_process,taxes_insurance_faq,0,0,1,1,1,0,0,0,0,0,0,0,0,1,0,As the FHA taxes-and-insurance FAQ (same audio clips).
+/Faq/your-conventional-fixed-loan-pmi-faqs,mortgage_process,pmi_faq,0,0,1,0,1,0,0,0,0,0,0,0,0,1,0,"Professor coded all but LoanTermsRelated: mortgage insurance is a cost the borrower carries, not a Loan Terms item."
+/Faq/your-conventional-arm-loan-pmi-faqs,mortgage_process,pmi_faq,0,0,1,0,1,0,0,0,0,0,0,0,0,1,0,As the conventional PMI FAQ (same audio clips).
+/Faq/your-fha-fixed-rate-loan-fha-mortgage-insurance-faqs,mortgage_process,fha_mi_faq,0,0,1,0,1,0,0,0,0,0,0,0,0,1,0,FHA's version of the PMI FAQ; coded as the PMI FAQ.
+/Faq/your-va-fixed-rate-loan-va-funding-fee-faqs,mortgage_process,va_funding_fee_faq,0,0,1,0,1,0,0,0,0,0,0,0,0,1,0,VA's counterpart of the mortgage-insurance FAQ; coded as the PMI FAQ.
+/JustTheFacts/your-fha-fixed-rate-loan-just-the-facts,mortgage_process,loan_type_facts,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,Fact sheet on the loan product (rate type and term are Loan Terms).
+/JustTheFacts/your-conventional-fixed-loan-just-the-facts,mortgage_process,loan_type_facts,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,As the FHA fact sheet.
+/JustTheFacts/your-va-fixed-rate-loan-just-the-facts,mortgage_process,loan_type_facts,0,0,1,1,0,0,1,0,0,0,0,0,1,1,0,As the FHA fact sheet; professor coded ProcessRelated and Video as 1 here and those values are kept.
+/JustTheFacts/your-conventional-arm-loan-just-the-facts,mortgage_process,loan_type_facts,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,As the FHA and conventional fact sheets (2 of the 3 coded fact sheets are ProcessRelated 0).
+/Module/people-and-process,mortgage_process,people_process_module,0,0,1,1,1,1,0,1,1,0,0,0,1,1,1,Professor coded every flag except LoanTermsRelated: who does what in the mortgage process; no Loan Terms content.
+/Infographic/people-and-process-the-mortgage-process,mortgage_process,people_process_infographic,0,0,1,1,1,1,0,0,1,0,0,0,0,1,0,Professor coded all but LoanTermsRelated and the goals: a diagram of the process steps; informs.
+/Faq/people-and-process-faqs,mortgage_process,people_process_faq,0,0,1,1,1,1,0,0,0,0,0,0,0,1,1,"Same topic as the people-and-process module. Borrower/Lender and Goal_to_Advise from the professor's coding of its audio clips (CC_54-57: Borrower 1, Lender 1 on 3 of 4, Advise 1)."
+/JustTheFacts/people-and-process-just-the-facts,mortgage_process,people_process_facts,0,0,1,1,1,1,0,0,0,0,0,0,0,1,0,Fact sheet for the people-and-process topic; process flags follow the module. Facts inform rather than advise.
+/Module/closing-documents-overview-fha,mortgage_process,closing_docs_overview,0,0,1,1,1,0,0,0,1,0,0,0,1,1,0,"Professor coded the topic flags. Borrower/Lender from his coding of its clips (CC_96-108, CC_200-214: Borrower 1 on 26 of 28, Lender 1 on 1). Explains the documents in general, not the borrower's own CD."
+/Module/closing-documents-overview-fixed,mortgage_process,closing_docs_overview,0,0,1,1,1,0,0,0,1,0,0,0,1,1,0,As the FHA closing-documents overview (same audio clips).
+/Module/closing-documents-overview-va,mortgage_process,closing_docs_overview,0,0,1,1,1,0,0,0,1,0,0,0,1,1,0,As the FHA closing-documents overview (same audio clips).
+/Module/closing-documents-overview-convarm,mortgage_process,closing_docs_overview,0,0,1,1,1,0,0,0,1,0,0,0,1,1,0,As the FHA closing-documents overview (same audio clips).
+/Module/application-documents-explained,mortgage_process,application_docs,0,0,1,1,1,0,0,1,0,0,0,1,1,1,0,"The application-stage documents explained, with the Service Provider List download. Borrower/Lender, LoanEstimateRelated and goals from the professor's coding of its clips (CC_73-95: Borrower 1 on 17 of 23, Lender 1 on 6, LE 1 on 6 incl. the LE explainers CC_88-93, Advise 1 on 3)."
+/Module/budgeting-basics,money_skills,budgeting_module,0,1,0,0,0,0,0,0,0,0,0,0,1,1,0,Professor coded every flag except LoanTermsRelated: no loan-term content.
+/Infographic/budgeting-basics-your-monthly-net-income,money_skills,budgeting_infographic,0,1,0,0,1,0,0,0,0,0,0,0,0,1,0,Professor coded the topic flags; informs.
+/Faq/budgeting-basics-budgeting-faqs,money_skills,budgeting_faq,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,"Professor coded GeneralFinancial 0 here, the one money-skills page with 0; kept and on his question list. Borrower/Lender and Advise from his coding of its clips (CC_64-68: Borrower 0, Lender 0, Advise 1)."
+/JustTheFacts/budgeting-basics-just-the-facts,money_skills,budgeting_facts,0,1,1,0,0,0,0,0,0,0,0,0,0,1,0,Professor coded the topic flags; facts inform.
+/Module/credit-management,money_skills,credit_module,0,1,0,0,0,0,0,0,0,0,0,0,1,1,1,"Coded as the budgeting module (same group), with Advise 1: the credit topic's coded FAQ and clips (CC_60-63) are all Advise 1."
+/Infographic/credit-management-what-determines-credit-scores,money_skills,credit_infographic,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,What determines a score: informs.
+/Slideshow/credit-management-maintaining-good-credit,money_skills,credit_slideshow,0,1,0,0,0,0,0,0,0,0,0,0,0,1,1,Maintaining good credit: recommendations.
+/Faq/credit-management-improving-your-credit-score-faqs,money_skills,credit_faq,0,1,0,0,0,0,0,0,0,0,0,0,0,1,1,Professor coded every flag except LoanTermsRelated.
+/JustTheFacts/credit-management-just-the-facts,money_skills,credit_facts,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,Professor coded the topic flags; facts inform.
+/Module/how-your-rate-was-determined,money_skills,rate_module,0,1,1,0,0,1,1,0,0,0,0,0,1,1,0,Professor coded the topic flags. The interest rate is a Loan Terms item.
+/Infographic/how-your-rate-was-determined-what-factors-affect-rates,money_skills,rate_infographic,0,0,1,0,0,1,1,0,0,0,0,0,0,1,0,Professor coded GeneralFinancial 0 here against 1 on the rate module; kept and on his question list.
+/Faq/how-your-rate-was-determined-interest-rates-faqs,money_skills,rate_faq,0,1,1,0,1,0,1,0,0,0,0,0,0,1,0,"Rate topic, GeneralFinancial 1 as agreed. Borrower/Lender/Loan Terms/Advise from the professor's coding of its clips (CC_58-59: Borrower 1, Lender 0, LoanTerms 1, Advise 0)."
+/JustTheFacts/how-your-rate-was-determined-just-the-facts,money_skills,rate_facts,0,1,1,0,0,1,1,0,0,0,0,0,0,1,0,"Rate topic, GeneralFinancial 1 as agreed; Borrower/Lender follow the rate module."
+/AcceptTerms,navigation,accept_terms,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,Professor coded every flag except LoanTermsRelated (including Goal_to_inform 1).
+/Landing,navigation,landing,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Professor coded every flag except LoanTermsRelated and the goals; a landing page has no content goal.
+/,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Site root / redirect.
+/MyMortgage,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Home menu listing the modules.
+/SelectLoan,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Loan picker.
+/Login*,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"Login, password reset and confirmation pages."
+/Logout,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Sign-out.
+/Contact,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Contact page.
+/About,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,About page.
+/Privacy,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Privacy policy.
+/Terms,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Terms of use.
+/Glossary,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Glossary index.
+/Dashboard/qa,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Internal QA page (5 events).
+/AwarenessQuestions*,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Quiz form submissions.
+/survey*,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Survey completion page (agreed: 0).
+/Module,navigation,navigation,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,Bare /Module/ with no module name (1 event).
+/translations/*,page_resource,page_resource,,,,,,,,,,,,,,,,"Language file the app loads with a page. Not a pageview: it belongs to the page that loaded it (DEC-Z, DEC-AB) and only sets the language state."
+/favicon.ico,page_resource,page_resource,,,,,,,,,,,,,,,,Browser asset request (DEC-P).
+/cart.json,page_resource,page_resource,,,,,,,,,,,,,,,,Browser asset request (DEC-P).
+/download/samples/*,mortgage_process,sample_document,0,0,1,1,1,0,0,0,0,0,0,1,0,0,0,"Generic sample disclosures and CFPB booklets (intent to proceed, lock-in, toolkit). Not the borrower's own documents. Downloads carry no content goal (agreed)."
+/Download/LoanDocument/*,own_loan,loan_document,context,context,context,context,context,context,context,context,context,context,context,1,context,context,context,The borrower's own document. Its type is resolved per event in phase 2 (DEC-AC); the flags then come from the download:LE / download:CD / download:SPL rows below.
+download:LE,own_loan,loan_document,1,0,1,1,1,0,1,1,0,1,0,1,0,0,0,"A Loan Estimate download: the LE page's flags, LE only, Download 1, no video or goal."
+download:CD,own_loan,loan_document,1,0,1,0,1,0,1,0,1,0,1,1,0,0,0,"A Closing Disclosure download: the CD page's flags, CD only."
+download:SPL,own_loan,loan_document,1,0,1,1,1,0,0,1,0,0,0,1,0,0,0,"A Service Provider List download (from Application Documents Explained): part of the LE package, so LoanEstimateRelated 1, CDRelated 0 (agreed); not the LE document itself."

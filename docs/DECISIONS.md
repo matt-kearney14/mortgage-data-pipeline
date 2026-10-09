@@ -839,3 +839,236 @@ and 333 of the borrowers on them appear in our clickstream — they demonstrably
 used the software. Our data resolves gaps in theirs.
 
 **Reversal cost:** Zero. Both new columns are passthroughs.
+
+---
+
+## DEC-Z — Independent audit, 2026-10-01: `/translations/en` is not a pageview; `pages_C` counts a row's own flags; unknowns are not zeros
+
+**Status:** Provisional. Made by an independent audit of this repository, not by
+the agent that wrote the entries above. Every change is reversible by flag or by
+reverting one commit on branch `audit`; `backup/pre-audit-2026-09-30` holds the
+pre-audit state. Full report: `docs/AUDIT_REPORT_2026-10-01.md`.
+
+**Choice 1 — `/translations/en` is dropped before sessionization, like the
+favicon (DEC-P).** `--keep-translation-resources` restores the old behaviour.
+
+*Rationale.* DEC-S established from the data that the app requests
+`/translations/en` when a module page loads (bucket 2, which has no toggle, emits
+it at the same rate as bucket 3). DEC-S acted on this for the language state only.
+The row went on being counted as a pageview and credited dwell. Because it follows
+the module page a median 1 s later, it took the module's reading time: 291 hours,
+8.9% of all observed dwell, credited to a row with no characteristic flags. It
+made up 95% of all "unattributable" pageviews. This is the problem DEC-P names,
+"truncating the preceding page's dwell", at four times the favicon's scale.
+
+*Evidence.* Re-running with the row dropped: `time_LoanEstimateRelated` +272%,
+`time_CDRelated` +95%, `pages_unattributable` 19,581 → 359, total observed time
+−0.2%, sessions 34,436 → 34,403. The time was always measured. It had been
+credited to the wrong row.
+
+*Alternatives.* Keeping the row as a pageview but crediting its dwell to the
+preceding page would leave `webpages_visited` counting a request the borrower
+never made, so it was rejected. Treating `/translations/es` the same way was also
+rejected. It is a user action (the toggle), it is clean by the DEC-S evidence, and
+it has 292 rows.
+
+*Reversal cost.* Zero, because it is a CLI flag. With the flag set, every data file
+is identical to the pre-change output (verified).
+
+**Choice 2 — `pages_C` and `unknown_C` use the row's own flags.** Spec §5 var 32
+defines `pages_C = sum(flag)` over the user's rows. Only time (var 33) is
+re-attributed to the parent page. The code had applied the parent substitution to
+pages as well. As a result `pages_LoanTermsRelated` was 0 for every user: the only
+rows carrying that flag are audio clips, and the substitution erased all of them.
+Clips with no parent page in their session (40 rows) are now credited their own
+flags for time, as §5 prescribes. They had been sent to "unknown".
+
+**Choice 3 — two unknowns stop reading as zero/False.** `downloads_type_unknown`
+is added as the `unknown_` companion of `pages_LEDownload`/`pages_CDDownload`
+(964 users had read 0 LE downloads while holding untyped ones).
+`pilot_bucket_conflicting` is NULL, not False, for the 5 users linked to no pilot
+loan.
+
+**Recorded, not changed — the LE/CD download tie-break (DEC-X).** A page coded
+BOTH `LoanEstimateRelated` and `CDRelated` counts as LE context. Three paths carry
+both flags (`/Module/your-loan-estimate-made-clear`, `/Module/people-and-process`,
+a `-1` variant). They supply 7,157 of the 7,161 LE-labelled contexts. Strictly
+LE-only context supplies 4. "LE download" therefore means "the last LE/CD page was
+one of those modules". DEC-X describes the rule as "the most recent LE-related or
+CD-related pageview" and did not mention this. The tie-break is now a named
+constant, `BOTH_LE_CD_CONTEXT`. Its "87.0% self-consistency" reproduces exactly,
+but it measures agreement between repeat downloads, not accuracy. The independent
+signal is timing: downloads after a CD-only page land a median 3 days before the
+loan's status date, against 13 days for the BOTH-module group. That is some
+evidence the split carries meaning, and it is weak evidence for "LE". Whether
+these columns stay in the deliverable is a decision for the research team.
+
+**Noted for the log, not decided here.** DEC-N, DEC-O, DEC-P, DEC-Q and DEC-R are
+cited in code and in the codebook, but no entry for any of them exists in this
+file. Their rationale is in `docs/Phase2_Plan.md` §1 (D1–D5) and §4. Under
+CLAUDE.md's protocol each should have an entry here.
+
+---
+
+## DEC-AA — Pre-pilot test accounts are removed, by a date rule
+
+*2026-10-08. Agreed with the research team.*
+
+**Choice.** A user whose FIRST event is earlier than the pilot start is a tester
+and is removed entirely, with every event. The pilot start is the earliest
+`Application_Date` in `loan_application_data_partial.csv` (2023-05-11 in this
+data), computed each run; `--pilot-start` on `build_path_dictionary.py` and
+`clickstream_processor.py` overrides it.
+
+*Evidence.* Two users start in February and April 2023, three months before the
+first loan application; neither reaches a loan. Between them they hold 433 events.
+Real activity runs from May 2023 to February 2024.
+
+*Why a rule, not a list.* Naming the two hashes would make the code specific to
+this extract. The rule removes nobody else here and applies itself to new data.
+
+*Reversal cost.* A flag value (`--pilot-start 2000-01-01` keeps everyone).
+
+## DEC-AB — Language follows the language files loaded with each page (supersedes DEC-S, DEC-M)
+
+*2026-10-08. Agreed with the research team ("once the user swaps to ES or EN,
+every page after that is assumed to be in that language until we see they
+swapped again").*
+
+**Choice.** `/translations/en` and `/translations/es` are part of the page that
+loaded them, never pageviews (extends DEC-Z to `/es`). Requests within 2 seconds
+of each other are one load. A load containing `/translations/es` means Spanish;
+a load with `/translations/en` alone means English. The load sets the language of
+its own page (the page within 2 s) and of every page after it until the next
+load. Each user starts in their account language (DEC-K).
+
+*Evidence.* In Spanish the app requests BOTH files within the same second (135 of
+the 220 `/translations/es` → next-translation pairs are ≤ 1 s apart, in either
+order), so DEC-S's "a lone `/translations/en` cannot be told from page-load noise"
+is resolved by grouping: a paired `en` is part of a Spanish load, a lone `en` is
+an English load. The HAR file confirms the app requests `/translations/en` with
+`/data/le?l=en` when the LE page loads in English.
+
+*What changed.* Spanish pageviews 6,117 → 5,217; 23 changes to Spanish and 23
+back to English (previously the reverse switch was never counted, so Spanish was
+overstated). `language_switches_to_spanish` now counts changes of state, not
+requests; `language_switches_to_english` is new. `--lang-en-switch` and
+`--lang-asset-paths` are removed: they were alternative versions of the same
+step.
+
+*Spanish audio clips are not language evidence.* 23 Spanish clip plays come from 4
+borrowers who never load the Spanish interface: the clip language is a per-clip
+choice. They do not move the state (as DEC-M decided; QA §2 reports the count).
+
+## DEC-AC — Document type per download, from where it was clicked; LEDocument/CDDocument computed (supersedes DEC-F, DEC-X)
+
+*2026-10-08. Agreed with the research team.*
+
+**LEDocument / CDDocument** mean "the borrower is looking at their own LE / CD":
+the LE page (incl. its `-1` variant) and LE downloads; the CD page and CD
+downloads; and the Dashboard, which shows the LE always and is counted as showing
+the CD once the borrower has CD evidence (a CD page view or a CD download) at or
+before that view. Before that, the Dashboard's CDDocument and CDRelated are 0
+(provenance `dashboard_no_cd_yet`). **LEDownload / CDDownload** = a document
+download AND the matching Document flag.
+
+**Download type**, strongest evidence first, each download recording which:
+1. *page* — the page it was clicked from in the same session: the LE page → LE,
+   the CD page → CD, Application Documents Explained → Service Provider List
+   (a new type, LoanEstimateRelated 1, CDRelated 0). 11,484 downloads.
+2. *doc match* — the same document id typed by its page elsewhere, if every such
+   typing agrees (39 of 2,404 repeat-typed ids disagree and are not used). 2,276.
+3. *number order* — within a borrower, an untyped id below their CD ids is an LE,
+   at or above them a CD (or above their LE ids, a CD); a borrower with nothing
+   typed but two or more documents: lowest is the LE. Ids typed both ways anchor
+   nothing. A "CD" less than 3 days after the LE was sent is rejected (10). 2,802.
+4. Otherwise unknown: 915 downloads (0.29% of pageviews), counted per borrower
+   in `downloads_type_unknown`.
+
+*Evidence.* Timing, measured and not used to set page-typed values: page-typed
+CDs are a median 30 days after the LE was sent and 0% within 3 days; page-typed
+LEs 17 days, 17% within 3 days. Number-order and doc-match types show the same
+split (CD 0% within 3 days). The page test replaces DEC-X's "last LE/CD page in
+the session" rule, whose LE label rested almost entirely on a tie-break (DEC-Z).
+
+*Columns.* `downloads_type_inferred` is replaced by `downloads_typed_by_page`,
+`downloads_typed_by_doc_match` and `downloads_typed_by_number_order`, so the
+weaker evidence can be dropped. Event grain: `download_type`,
+`download_type_source`.
+
+*Single place.* Phase 1 leaves these cells NULL with provenance `context`;
+`resolve_context()` in phase 2 fills those cells and nothing else, and asserts it.
+
+## DEC-AD — Every page template coded; the professor's values always win (supersedes DEC-G, DEC-H; amends DEC-L)
+
+*2026-10-08. Agreed with the research team, variable by variable.*
+
+**Choice.** `docs/page_template_coding.csv` lists every page template in the log
+(70 rows) with a value for every flag and a rationale. A cell comes from, in order:
+the professor's own cell for that path; his cell for the same page (a `-1`
+variant) or the same clip id; otherwise the template table, labelled
+`coded_by_us`. The table never contradicts a cell he coded (checked every build:
+0 conflicts). Audio clips he did not code take the values of the page they play
+on (`clip_from_page`); a clip is never a video, a download or a document.
+
+*The rules followed* (from the professor's own pattern):
+- Three groups: the borrower's own loan (Personalized 1), the mortgage process,
+  and money skills (GeneralFinancial 1). Personalized 1 is never GeneralFinancial
+  1. His two exceptions are kept and put to him: Budgeting FAQs and the rates
+  infographic (GeneralFinancial 0).
+- Mortgage, Process, Borrower and Lender are independent tags. ProcessRelated
+  keeps his values (DEC-E); uncoded pages follow the coded page of the same kind.
+  Borrower/Lender follow his coding of a page's own clips where he coded them;
+  the CD page follows the LE page.
+- LoanTermsRelated (blank on every page he coded) is coded from content, using
+  the LE's own "Loan Terms" section: rate, amount, payment.
+- Goals: every content page informs (all 6 pages he coded are Goal_to_inform 1);
+  Advise is 1 where the page or his coding of its clips recommends action.
+- Navigation pages are 0; downloads carry no goal; the Dashboard is a content page
+  showing the borrower's own loan.
+
+*Measured.* After DEC-AD, 100% of pageviews have every flag except the 915
+downloads of unknown type (DEC-AC). Of all page-characteristic cells: 23% the
+professor's, 27% coded by us, 44% navigation 0, 7% set from the event. Users
+whose `pages_X` changed most: LoanTermsRelated 296 → 102,472 pageviews,
+LEDocument/CDDocument from empty to 46,021 / 20,274. Five examples per flag are
+in `output/phase1_before_after.md`.
+
+*Removed.* The sibling inference and its leave-one-out validation (DEC-G), and
+`--unresolved-fill` (DEC-L's opt-in 0-fill): with no unresolved cells left it
+could only have overwritten `context` cells before phase 2 decided them.
+
+*Reversal cost.* Editing a cell of the CSV and re-running. The professor's
+corrections go there.
+
+## DEC-AE — `Audio` is the count of clips on a page (supersedes DEC-J)
+
+*2026-10-08. Agreed with the research team.*
+
+**Choice.** `Audio` = the number of distinct audio clips that play on the page,
+as the professor's `coding_dictionary` defines it. Which page a clip belongs to is
+measured: the page it is played from (the most recent page in its session). Pages
+sharing content (the FHA, conventional, VA and ARM versions of one FAQ, via
+`content_kind`) share clips; a clip belongs to a kind holding at least 20% of its
+plays. A clip row itself is Audio 0. Unmapped pages would be reported; there are
+none.
+
+*Result.* 10 page kinds carry clips (e.g. Application Documents Explained 23,
+Closing Documents Overview 28, Taxes & Insurance FAQs 6). The HAR recording of the
+demo site agrees for every clip it played.
+
+*Departure from the professor's sheet.* His Audio is 0/1 and is 1 on eight pages
+(seven modules and the VA fact sheet) from which no clip is ever played; the
+modules' narration is in their video. Those read 0 here. His value is kept as `Audio_professor` in the path dictionary and
+the question is on his list.
+
+## DEC-AF — Blanks that cannot be filled stay blank, and say why
+
+*2026-10-08. Agreed with the research team.*
+
+**Choice.** Time on the last page of each session (34,376 pageviews) is left
+blank, not estimated; `pages_time_not_observable` counts it per borrower. A
+milestone timer is blank where its date does not exist; `milestone_blank_reason`
+gives, per borrower, "not in loan extract" or each blank timer with its reason
+("loan never locked", "LE not sent", "no LE page visit on or after the LE was
+sent", ...).
